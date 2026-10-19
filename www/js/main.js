@@ -83,6 +83,9 @@ var comm_states = {};
 var sequencer_states = {};
 // the settings of the serial port of a Modbus RTU unit by its circuit, e.g. "19200 8-N-1"
 var serial_settings = {};
+// the DirectSwitch modes of a DI in the Simple mode, Evok sends ds_modes only in the DirectSwitch mode;
+// all HW definitions of Evok have these ones
+var DS_MODES = ["Simple", "Inverted", "Toggle"];
 configuratible_devices = ["di", "ro", "do", "ai", "ao", "led", "wd", "temp"];
 
 function compare(a, b) {
@@ -261,7 +264,9 @@ function populateConfigForm(form, device, circuit, data) {
                 counter_label.text("Counter value:");
                 form.append([counter_label, counter_text_field]);
             }
-            if (data.hasOwnProperty("ds_mode") && data.hasOwnProperty("ds_modes")) {
+            // Evok sends ds_mode and ds_modes only in the DirectSwitch mode, the DirectSwitch mode is chosen
+            // together with the mode; it is shown and sent only with the mode DirectSwitch
+            if (data.hasOwnProperty("modes") && data.modes.includes("DirectSwitch")) {
                 var ds_mode_select_field = $("<select>", {
                     name: "unipi_config_form_ds_mode_select_field",
                     "data-iconpos": "left",
@@ -270,7 +275,7 @@ function populateConfigForm(form, device, circuit, data) {
                 var ds_mode_label = $("<label>", { for: "unipi_config_form_ds_mode_select_field" });
                 ds_mode_label.text("DirectSwitch Mode:");
                 var selected_mode = data.ds_mode;
-                $.each(data.ds_modes, function (index, value) {
+                $.each(data.ds_modes || DS_MODES, function (index, value) {
                     var option_field;
                     if (selected_mode == value) {
                         option_field = $("<option>", { value: value, selected: "selected" });
@@ -280,7 +285,12 @@ function populateConfigForm(form, device, circuit, data) {
                     option_field.text(value);
                     ds_mode_select_field.append(option_field);
                 });
-                form.append([ds_mode_label, ds_mode_select_field]);
+                var ds_mode_div = $("<div>").append([ds_mode_label, ds_mode_select_field]);
+                ds_mode_div.toggle(data.mode == "DirectSwitch");
+                mode_select_field.on("change", function () {
+                    ds_mode_div.toggle(this.value == "DirectSwitch");
+                });
+                form.append(ds_mode_div);
             }
             break;
         }
@@ -1495,6 +1505,10 @@ function createConfigPostRequestDict(arg_fields) {
                 break;
             }
             case "unipi_config_form_ds_mode_select_field": {
+                // Evok refuses ds_mode out of the DirectSwitch mode
+                if ($("#unipi_config_form_mode_select_field").val() != "DirectSwitch") {
+                    break;
+                }
                 outp["ds_mode"] = arg_fields[i].value;
                 break;
             }
