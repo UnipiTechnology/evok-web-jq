@@ -1,5 +1,0 @@
-# Project requires external libraries available from CDN
-# Loading libraries is defined in index.html
-
-https://ajax.googleapis.com/ajax/libs/jquery/2.1.1/jquery.min.js
-https://ajax.googleapis.com/ajax/libs/jquerymobile/1.4.5/jquery.mobile.js
