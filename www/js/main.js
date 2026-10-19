@@ -312,31 +312,6 @@ function populateConfigForm(form, device, circuit, data) {
                 timeout_label.text("Command Watchdog trigger timeout (in ms):");
                 form.append([timeout_label, timeout_text_field]);
             }
-            if (data.hasOwnProperty("was_wd_reset")) {
-                var wd_reset_select_field = $("<select>", {
-                    name: "unipi_config_form_wd_reset_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_wd_reset_select_field",
-                });
-                var wd_reset_label = $("<label>", { for: "unipi_config_form_wd_reset_select_field" });
-                wd_reset_label.text("Perform Manual Reset:");
-                var selected_mode = 0;
-                $.each([0, 1], function (index, value) {
-                    var option_field;
-                    if (selected_mode == value) {
-                        option_field = $("<option>", { value: value, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: value });
-                    }
-                    if (value == 0) {
-                        option_field.text("No");
-                    } else {
-                        option_field.text("Yes");
-                    }
-                    wd_reset_select_field.append(option_field);
-                });
-                form.append([wd_reset_label, wd_reset_select_field]);
-            }
             break;
         }
         case "temp": {
@@ -1281,6 +1256,9 @@ $(document).ready(function () {
     $("#unipi_save_all_button").on("click", function (event) {
         saveAllButtonHandler(event);
     });
+    $("#unipi_reset_button").on("click", function (event) {
+        resetButtonHandler(event);
+    });
     $("#unipi_token_button").on("click", function (event) {
         event.preventDefault();
         openTokenPopup("");
@@ -1295,41 +1273,173 @@ $(document).ready(function () {
     });
 });
 
-function saveAllButtonHandler(event) {
-    event.preventDefault();
-    // the settings of a Modbus unit are saved by its device nv_save, the units without it are not listed
+// The units of the devices of a type (nv_save, wd) with their model by device_info, sorted by the circuit
+function loadUnits(device, callback) {
     $.ajax({
         crossDomain: true,
-        url: api_url + "/rest/nv_save/all",
+        url: api_url + "/rest/" + device + "/all",
         dataType: "json",
-        success: function (data) {
-            $.each(data, function (index, nv_save) {
-                $.ajax({
-                    crossDomain: true,
-                    url: api_url + "/rest/nv_save/" + nv_save.circuit,
-                    type: "POST",
-                    data: { value: 1 },
-                    success: function (data) {},
-                    error: function (xhr) {
-                        showApiError("Error saving FW data of " + nv_save.circuit + ": ", xhr);
-                    },
-                });
+        success: function (devices) {
+            $.ajax({
+                crossDomain: true,
+                url: api_url + "/rest/device_info/all",
+                dataType: "json",
+                success: function (infos) {
+                    var models = {};
+                    $.each(infos, function (index, info) {
+                        models[info.circuit] = info.model;
+                    });
+                    callback(devices, models);
+                },
+                // the units are shown without the models
+                error: function (xhr) {
+                    callback(devices, {});
+                },
             });
         },
         error: function (xhr) {
-            showApiError("Error saving FW data: ", xhr);
+            showApiError("Error reading the units: ", xhr);
         },
     });
+}
 
-    $.ajax({
-        crossDomain: true,
-        url: api_url + "/rest/run/alias",
-        type: "POST",
-        data: { save: 1 },
-        success: function (data) {},
-        error: function (xhr) {
-            showApiError("Error saving aliases: ", xhr);
+function unitLabel(circuit, models) {
+    return models[circuit] ? circuit + " (" + models[circuit] + ")" : circuit;
+}
+
+// A dialog with the choice of the units by checkboxes, all checked or none; extra are the other choices
+// {value, label} after the units. onSubmit gets the chosen values.
+function openUnitsPopup(title, message, units, models, checked, extra, submitText, onSubmit) {
+    var inner = $("#unipi_units_form_inner_div");
+    inner.empty();
+    inner.append($("<h3>").text(title));
+    if (message) {
+        inner.append($("<p>").text(message));
+    }
+    var choices = $.map(
+        units.sort(function (a, b) {
+            return a.circuit.localeCompare(b.circuit, undefined, { numeric: true });
+        }),
+        function (unit) {
+            return { value: unit.circuit, label: unitLabel(unit.circuit, models) };
         },
+    ).concat(extra);
+    var fieldset = $("<fieldset>", { "data-role": "controlgroup" });
+    $.each(choices, function (index, choice) {
+        var id = "unipi_units_choice_" + index;
+        fieldset.append(
+            $("<input>", {
+                type: "checkbox",
+                name: "unipi_units_choice",
+                id: id,
+                value: choice.value,
+                checked: checked,
+            }),
+            $("<label>", { for: id }).text(choice.label),
+        );
+    });
+    inner.append(fieldset);
+    inner.append($("<input>", { type: "submit", value: submitText }));
+    inner.append(
+        $("<button>", { type: "button", class: "ui-btn ui-corner-all", id: "unipi_units_cancel_button" }).text(
+            "Cancel",
+        ),
+    );
+    inner.trigger("create");
+    $("#unipi_units_cancel_button").on("click", function () {
+        $("#unipi_units_popup").popup("close");
+    });
+    $("#unipi_units_form")
+        .off("submit")
+        .on("submit", function (event) {
+            event.preventDefault();
+            var chosen = $.map(inner.find("input[name=unipi_units_choice]:checked"), function (input) {
+                return input.value;
+            });
+            if (chosen.length == 0) {
+                return;
+            }
+            $("#unipi_units_popup").popup("close");
+            onSubmit(chosen);
+        });
+    $("#unipi_units_popup").popup("open");
+}
+
+// the value of the extra choice of the aliases in the dialog of Save All, a circuit of a unit has no space
+var SAVE_ALIASES = "aliases of devices";
+
+function saveAllButtonHandler(event) {
+    event.preventDefault();
+    // the settings of a Modbus unit are saved by its device nv_save, the units without it are not listed
+    loadUnits("nv_save", function (units, models) {
+        openUnitsPopup(
+            "Save current state to Flash",
+            "The units load the saved settings after their restart.",
+            units,
+            models,
+            true,
+            [{ value: SAVE_ALIASES, label: "Aliases of the devices" }],
+            "Save",
+            saveUnits,
+        );
+    });
+}
+
+function saveUnits(circuits) {
+    $.each(circuits, function (index, circuit) {
+        if (circuit == SAVE_ALIASES) {
+            $.ajax({
+                crossDomain: true,
+                url: api_url + "/rest/run/alias",
+                type: "POST",
+                data: { save: 1 },
+                success: function (data) {},
+                error: function (xhr) {
+                    showApiError("Error saving aliases: ", xhr);
+                },
+            });
+            return;
+        }
+        $.ajax({
+            crossDomain: true,
+            url: api_url + "/rest/nv_save/" + circuit,
+            type: "POST",
+            data: { value: 1 },
+            success: function (data) {},
+            error: function (xhr) {
+                showApiError("Error saving FW data of " + circuit + ": ", xhr);
+            },
+        });
+    });
+}
+
+function resetButtonHandler(event) {
+    event.preventDefault();
+    // a unit is restarted by its watchdog
+    loadUnits("wd", function (units, models) {
+        openUnitsPopup(
+            "Reset units",
+            "The units restart at once, they do not respond until they start again.",
+            units,
+            models,
+            false,
+            [],
+            "Reset",
+            function (circuits) {
+                $.each(circuits, function (index, circuit) {
+                    $.ajax({
+                        crossDomain: true,
+                        url: api_url + "/rest/wd/" + circuit,
+                        type: "POST",
+                        data: { reset: 1 },
+                        success: function (data) {},
+                        error: function (xhr) {
+                            showApiError("Error resetting the unit " + circuit + ": ", xhr);
+                        },
+                    });
+                });
+            },
+        );
     });
 }
 
@@ -1392,10 +1502,6 @@ function createConfigPostRequestDict(arg_fields) {
             }
             case "unipi_config_form_timeout_field": {
                 outp["timeout"] = parseInt(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_wd_reset_select_field": {
-                outp["reset"] = parseInt(arg_fields[i].value);
                 break;
             }
             case "unipi_config_form_ap_state_select_field": {
