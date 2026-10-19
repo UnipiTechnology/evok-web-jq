@@ -1,30 +1,7 @@
-$.fn.exists = function () {
-    return this.length !== 0;
-};
-
-$.postJSON = function (url, data, success, args) {
-    args = $.extend(
-        {
-            url: url,
-            type: "POST",
-            data: JSON.stringify(data),
-            contentType: "application/json; charset=utf-8",
-            dataType: "json",
-            async: true,
-            success: success,
-        },
-        args,
-    );
-    return $.ajax(args);
-};
-
-var legacy_api = true;
 // the API is served by the same server as the page (nginx forwards it to Evok)
 var api_url = location.protocol + "//" + location.host;
 
 var ws = null;
-var use_polling = false;
-var timer = null;
 
 var device_counts = {};
 configuratible_devices = ["di", "ro", "do", "ai", "ao", "led", "wd", "temp"];
@@ -515,8 +492,6 @@ function populateConfigTab(device, circuit, circuit_display_name, msg) {
     document.getElementById("unipi_" + translated_device + "_config_div_grid").appendChild(config_el_div);
 }
 
-function getDeviceDisplayName() {}
-
 function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
     var device_properties = {};
     device_properties["device_name"] = "";
@@ -995,10 +970,6 @@ function syncDevice(msg) {
                 break;
             }
             case "di": {
-                if (msg.counter_mode != "Disabled") {
-                    var counter_el = document.getElementById(device_signature + "_counter");
-                    //counter_el.innerHTML = counter;
-                }
                 if ("bitvalue" in device_properties) {
                     main_el.innerHTML = device_properties["bitvalue"] == 1 ? "On" : "Off";
                 } else {
@@ -1069,47 +1040,25 @@ function syncDevice(msg) {
 }
 
 function updateValues() {
-    if (legacy_api) {
-        $.ajax({
-            crossDomain: true,
-            url: api_url + "/rest/all",
-            dataType: "json",
-            success: function (data) {
-                $("#unipi_loading_spinner").css("visibility", "hidden");
-                data = sortResults(data);
-                $.each(data, function (name, msg) {
-                    try {
-                        syncDevice(msg);
-                    } catch (error) {
-                        console.error(error);
-                    }
-                });
-            },
-            error: function (data) {
-                $("#unipi_loading_spinner").css("visibility", "visible");
-            },
-        });
-    } else {
-        $.ajax({
-            crossDomain: true,
-            url: api_url + "/rest/all",
-            dataType: "json",
-            success: function (data) {
-                $("#unipi_loading_spinner").css("visibility", "hidden");
-                data = sortResults(data.data);
-                $.each(data, function (name, msg) {
-                    try {
-                        syncDevice(msg);
-                    } catch (error) {
-                        console.error(error);
-                    }
-                });
-            },
-            error: function (data) {
-                $("#unipi_loading_spinner").css("visibility", "visible");
-            },
-        });
-    }
+    $.ajax({
+        crossDomain: true,
+        url: api_url + "/rest/all",
+        dataType: "json",
+        success: function (data) {
+            $("#unipi_loading_spinner").css("visibility", "hidden");
+            data = sortResults(data);
+            $.each(data, function (name, msg) {
+                try {
+                    syncDevice(msg);
+                } catch (error) {
+                    console.error(error);
+                }
+            });
+        },
+        error: function (data) {
+            $("#unipi_loading_spinner").css("visibility", "visible");
+        },
+    });
 }
 
 function configButtonHandler(event) {
@@ -1370,7 +1319,6 @@ function webSocketRegister() {
         };
 
         ws.onmessage = function (evt) {
-            var received_msg = evt.data;
             var msg = JSON.parse(evt.data);
             $("#unipi_loading_spinner").css("visibility", "hidden");
             if (msg.constructor === Array) {
@@ -1393,33 +1341,18 @@ function webSocketRegister() {
         };
     } else {
         alert("YOUR BROWSER DOES NOT HAVE WEBSOCKET SUPPORT!");
-        use_polling = true;
     }
 }
 
 function makePostRequest(action, params) {
-    if (legacy_api) {
-        $.ajax({
-            crossDomain: true,
-            url: api_url + "/rest/" + action,
-            type: "POST",
-            data: params,
-            success: function (data) {},
-            error: postRequestFailed,
-        });
-    } else {
-        var to_send = {};
-
-        $.ajax({
-            crossDomain: true,
-            url: api_url + "/rest/" + action,
-            dataType: "application/json",
-            type: "POST",
-            data: JSON.stringify(params),
-            success: function (data) {},
-            error: postRequestFailed,
-        });
-    }
+    $.ajax({
+        crossDomain: true,
+        url: api_url + "/rest/" + action,
+        type: "POST",
+        data: params,
+        success: function (data) {},
+        error: postRequestFailed,
+    });
 }
 
 // A refused change (e.g. 409 of a running sequence) leaves the UI in the requested state, reload the real one
