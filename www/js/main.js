@@ -4,6 +4,10 @@ var api_url = location.protocol + "//" + location.host;
 var ws = null;
 
 var device_counts = {};
+// the note of a device without the communication by its signature, "" when it is ok
+var comm_states = {};
+// the state of the running sequencer of an output by the signature of the output
+var sequencer_states = {};
 configuratible_devices = ["di", "ro", "do", "ai", "ao", "led", "wd", "temp"];
 
 function compare(a, b) {
@@ -159,27 +163,6 @@ function populateConfigForm(form, device, circuit, data) {
                     mode_select_field.append(option_field);
                 });
                 form.append([mode_label, mode_select_field]);
-            }
-            if (data.hasOwnProperty("counter_mode") && data.hasOwnProperty("counter_modes")) {
-                var counter_mode_select_field = $("<select>", {
-                    name: "unipi_config_form_counter_mode_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_counter_mode_select_field",
-                });
-                var counter_mode_label = $("<label>", { for: "unipi_config_form_counter_mode_select_field" });
-                counter_mode_label.text("Counter Mode:");
-                var selected_mode = data.counter_mode;
-                $.each(data.counter_modes, function (index, value) {
-                    var option_field;
-                    if (selected_mode == value) {
-                        option_field = $("<option>", { value: value, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: value });
-                    }
-                    option_field.text(value);
-                    counter_mode_select_field.append(option_field);
-                });
-                form.append([counter_mode_label, counter_mode_select_field]);
             }
             if (data.hasOwnProperty("counter")) {
                 var counter_text_field = $("<input>", {
@@ -632,7 +615,67 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
     return device_properties;
 }
 
+// The value of a unit which does not respond or of a lost 1-Wire sensor is the last known one
+function commNote(msg) {
+    if (msg.lost === true) {
+        return "sensor lost";
+    }
+    if (msg.comm && msg.comm !== "ok") {
+        return "no communication: " + msg.comm;
+    }
+    return "";
+}
+
+function sequencerNote(sequencer) {
+    if (sequencer.name === "sequence" && sequencer.steps != null) {
+        return "sequence " + sequencer.step + "/" + sequencer.steps;
+    }
+    return sequencer.name || "sequence";
+}
+
+// Shows the communication and the running sequencer of a device by its label. A change of an output
+// is refused while its sequencer runs, its switch is disabled.
+function refreshDeviceState(device_signature) {
+    var li = $("#" + device_signature + "_li");
+    if (!li.length) {
+        return;
+    }
+    var label = $("#" + device_signature + "_label");
+    var comm_note = comm_states[device_signature];
+    var sequencer = sequencer_states[device_signature];
+    var notes = [];
+    if (comm_note) {
+        notes.push(comm_note);
+    }
+    if (sequencer) {
+        notes.push(sequencerNote(sequencer));
+    }
+    label.find(".unipi-note").remove();
+    if (notes.length) {
+        label.append($("<span>", { class: "unipi-note" }).text(" (" + notes.join(", ") + ")"));
+    }
+    li.css("opacity", comm_note ? 0.5 : "");
+    var value_el = $("#" + device_signature + "_value");
+    if (value_el.hasClass("ui-flipswitch-input")) {
+        value_el.flipswitch(sequencer ? "disable" : "enable");
+    }
+}
+
+function syncSequencer(msg) {
+    var output_signature = "unipi_" + msg.output.dev + "_" + msg.output.circuit;
+    if (msg.running) {
+        sequencer_states[output_signature] = msg;
+    } else {
+        delete sequencer_states[output_signature];
+    }
+    refreshDeviceState(output_signature);
+}
+
 function syncDevice(msg) {
+    if (msg.dev == "sequencer") {
+        syncSequencer(msg);
+        return;
+    }
     var circuit = msg.circuit;
     var device = msg.dev;
     var device_signature = "unipi_" + device + "_" + circuit;
@@ -1037,9 +1080,22 @@ function syncDevice(msg) {
             }
         }
     }
+    comm_states[device_signature] = commNote(msg);
+    refreshDeviceState(device_signature);
 }
 
 function updateValues() {
+    // the sequencers are not in /rest/all; a sequencer which ended while the page was disconnected is cleared
+    $.ajax({
+        crossDomain: true,
+        url: api_url + "/rest/sequencer/all",
+        dataType: "json",
+        success: function (data) {
+            $.each(data, function (name, msg) {
+                syncSequencer(msg);
+            });
+        },
+    });
     $.ajax({
         crossDomain: true,
         url: api_url + "/rest/all",
@@ -1191,10 +1247,6 @@ function createConfigPostRequestDict(arg_fields) {
             }
             case "unipi_config_form_counter_field": {
                 outp["counter"] = parseFloat(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_counter_mode_select_field": {
-                outp["counter_mode"] = arg_fields[i].value;
                 break;
             }
             case "unipi_config_form_ds_mode_select_field": {
