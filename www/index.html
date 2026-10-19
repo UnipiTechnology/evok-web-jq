@@ -1,165 +1,181 @@
-<!DOCTYPE html>
-<!--[if lt IE 7 ]>
-<html class="ie ie6" lang="en"> <![endif]-->
-<!--[if IE 7 ]>
-<html class="ie ie7" lang="en"> <![endif]-->
-<!--[if IE 8 ]>
-<html class="ie ie8" lang="en"> <![endif]-->
-<!--[if (gte IE 9)|!(IE)]><!-->
-<html lang="en"> <!--<![endif]-->
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Unipi</title>
-    <meta name="description" content="">
-    <meta name="author" content="">
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Evok Web</title>
+        <link rel="icon" href="favicon.ico" />
+        <link rel="stylesheet" href="css/style.css" />
+        <script>
+            // the theme before the first paint: the choice of the user, else the one of the system
+            (function () {
+                var dark = null;
+                try {
+                    dark = localStorage.getItem("darkMode");
+                } catch (error) {}
+                if (dark === null) {
+                    dark =
+                        window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+                            ? "true"
+                            : "false";
+                }
+                document.documentElement.dataset.theme = dark === "true" ? "dark" : "light";
+            })();
+        </script>
+        <script src="js/main.js" defer></script>
+    </head>
+    <body>
+        <header class="topbar">
+            <div class="brand">
+                <svg class="brand-mark" width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+                    <rect x="1" y="1" width="26" height="26" rx="7" stroke="currentColor" stroke-width="2" />
+                    <path
+                        d="M8 14h4l2-5 3 10 2-5h1"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                    />
+                </svg>
+                <div class="brand-text">
+                    <span class="brand-name">Evok Web</span>
+                    <span class="brand-device" id="brand-device"></span>
+                </div>
+            </div>
+            <div class="connection" id="connection" data-state="connecting">
+                <span class="connection-dot"></span>
+                <span id="connection-text">Connecting…</span>
+            </div>
+            <div class="spacer"></div>
+            <nav class="actions" aria-label="Actions">
+                <button type="button" class="button" id="save-button">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path
+                            d="M3 2h8l2 2v10H3z M5 2v4h5V2 M5 14v-4h6v4"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linejoin="round"
+                        />
+                    </svg>
+                    <span>Save to flash</span>
+                </button>
+                <button type="button" class="button" id="reset-button">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path
+                            d="M13 8a5 5 0 1 1-1.5-3.5M13 2v3h-3"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                        />
+                    </svg>
+                    <span>Reset units</span>
+                </button>
+                <button
+                    type="button"
+                    class="button icon-button"
+                    id="token-button"
+                    aria-label="Evok API token"
+                    title="Evok API token"
+                >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <circle cx="5" cy="8" r="3" stroke="currentColor" stroke-width="1.4" />
+                        <path
+                            d="M8 8h6M12 8v2.5M14 8v2"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                        />
+                    </svg>
+                </button>
+                <button
+                    type="button"
+                    class="button icon-button"
+                    id="theme-button"
+                    aria-label="Dark mode"
+                    title="Dark mode"
+                >
+                    <svg class="icon-moon" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <path
+                            d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linejoin="round"
+                        />
+                    </svg>
+                    <svg class="icon-sun" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.4" />
+                        <path
+                            d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"
+                            stroke="currentColor"
+                            stroke-width="1.4"
+                            stroke-linecap="round"
+                        />
+                    </svg>
+                </button>
+            </nav>
+        </header>
 
-    <!-- Favicons
-    ================================================== -->
-    <link rel="shortcut icon" href="favicon.ico">
-
-    <!-- CSS
-    ================================================== -->
-    <link rel="stylesheet" type="text/css" href="css/jquery.mobile-1.4.5.min.css"/>
-    <!-- Added --------------------------------------->
-    <link id="darkMode" rel="stylesheet" type="text/css" href="css/jquery.mobile-1.4.5.min.dark.css"/>
-    <!-- -------------------------------------------- -->
-
-    <!-- Javascript
-    ================================================== -->
-    <script src="js/jquery.min.js"></script>
-    <script src="js/jquery.mobile.js"></script>
-    <script rel="javascript" type="text/javascript" src="js/main.js"></script>
-    <script type="text/javascript">
-        $(document).ready(function() {
-            webSocketRegister();
-            updateValues();
-
-            /* Added ---------------------------------------*/
-            var isDarkMode = localStorage.getItem('darkMode') === 'true';
-            if(isDarkMode) {
-                document.getElementById('darkMode').disabled = false;
-            } else {
-                document.getElementById('darkMode').disabled = true;
-            }
-            /* --------------------------------------------- */
-
-        });
-    </script>
-
-  <style>
-  .cmax8 {
-    max-width: 800px;
-    margin-left: auto;
-    margin-right: auto;
-    #position: static;
-    padding-left:0;
-    padding-right:0;
-  }
-  /* --------------------------------------------- */
-  </style>
-
-</head>
-<body>
-
-
-<!-- OVERVIEW page -->
-<div data-role="page" id="page-overview">
-    <div data-role="header"  class="cmax8" data-id="pageHeader" data-position="fixed">
-        <h2>Unipi Control Panel</h2>
-		<img src="/css/images/spinner.svg" class="ui-btn-right" id="unipi_loading_spinner" style="max-height: 80%;visibility: hidden;"/>
-        <img src="/css/images/dark-mode.svg" class="ui-btn-left" onclick="toggleDarkMode()" style="max-height: 80%">
-    </div>
-    <div data-role="main" class="ui-content cmax8">
-      <div data-role="tabs" >
-        <div data-role="navbar">
-            <ul>
-                <li><a href="#inputs" data-theme="a" data-ajax="false" class="ui-btn-active">Inputs</a></li>
-                <li><a href="#outputs" data-theme="a" data-ajax="false">Outputs</a></li>
-                <li><a href="#system" data-theme="a" data-ajax="false">System</a></li>
-                <li><a href="#configs" data-theme="a" data-ajax="false">Configuration</a></li>
-            </ul>
+        <div class="layout">
+            <aside class="units" aria-label="Units">
+                <div class="unit-select">
+                    <label for="unit-select">Unit</label>
+                    <select id="unit-select"></select>
+                </div>
+                <div id="unit-list"></div>
+            </aside>
+            <main class="content" id="content">
+                <p class="placeholder" id="placeholder">Loading the devices of Evok…</p>
+            </main>
         </div>
-        <div id="inputs" class="ui-content" data-inset="true">
-            <ul data-role="listview" id="inputs_list" data-count-theme="b" data-inset="true" data-split-icon="gear">
-                <li data-role="list-divider" data-theme="a" id="unipi_di_divider">Digital</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_ai_divider">Analog</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_temp_divider">1Wire Sensors/Devices</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_data_point_divider">Data points</li>
-            </ul>
-        </div>
-        <!-- /inputs -->
 
-        <div id="outputs" class="ui-content" data-inset="true">
-            <ul data-role="listview" id="outputs_list" data-count-theme="b" data-inset="true" data-split-icon="gear">
-				<li data-role="list-divider" data-theme="a" id="unipi_light_channel_divider" style="display: none;">DALI Channels</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_do_divider">Digital</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_ro_divider">Relays</li>
-				<li data-role="list-divider" data-theme="a" id="unipi_led_divider">LEDs</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_ao_divider">Analog</li>
-            </ul>
-        </div>
-        <!-- /outputs -->
-        
-        <div id="system" class="ui-content" data-inset="true">
-            <ul data-role="listview" id="system_list" data-count-theme="b" data-inset="true" data-split-icon="gear">
-                <li data-role="list-divider" data-theme="a" id="unipi_device_info_divider">Devices</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_watchdog_divider">Watchdog</li>
-                <li data-role="list-divider" data-theme="a" id="unipi_modbus_slave_divider">Modbus slaves</li>
-        	</ul>
-        </div>
-        <!-- /system -->
-        
-        <div id="configs" class="ui-content" data-inset="true">
-        	<div id="unipi_save_all_button_div">
-        		<button class="ui-btn ui-corner-all" id="unipi_save_all_button">Save current state to Flash</button>
-        		<button class="ui-btn ui-corner-all" id="unipi_reset_button">Reset units</button>
-        		<button class="ui-btn ui-corner-all" id="unipi_token_button">Evok API token</button>
-        	</div>
-        </div>
-        <!-- /configs -->
-        
-        <!-- /content -->
-      </div>
-      <!-- /tabs -->
-    </div>
-    <div data-role="popup" id="unipi_config_form_div">
-    	<form id="unipi_config_form">
-    		<div style="padding:20px 20px;" class="" id="unipi_config_form_inner_div">
-    		</div>
-    	</form>
-    </div>
-    <div data-role="popup" id="unipi_units_popup">
-    	<form id="unipi_units_form">
-    		<div style="padding:20px 20px;" id="unipi_units_form_inner_div">
-    		</div>
-    	</form>
-    </div>
-    <div data-role="popup" id="unipi_token_popup">
-    	<form id="unipi_token_form">
-    		<div style="padding:20px 20px;">
-    			<h3>Evok API token</h3>
-    			<p id="unipi_token_message"></p>
-    			<label for="unipi_token_field">Token (apis: token or read_token of the configuration of Evok):</label>
-    			<input type="password" id="unipi_token_field" autocomplete="off">
-    			<input type="submit" value="Submit">
-    			<button type="button" class="ui-btn ui-corner-all" id="unipi_token_clear_button">Forget token</button>
-    		</div>
-    	</form>
-    </div>
-    <div data-role="footer" data-position="fixed" data-tap-toggle="false" class="jqm-footer">
-        <h1>Unipi.technology</h1>
-    </div>
-    <!-- /footer -->
-</div>
+        <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script type="text/javascript">
-    function toggleDarkMode() {
-        var isDarkMode = localStorage.getItem('darkMode') === 'true';
-        document.getElementById('darkMode').disabled = isDarkMode;
-        localStorage.setItem('darkMode', !isDarkMode);
-    }
-</script>
+        <dialog class="dialog" id="config-dialog" aria-labelledby="config-title">
+            <form id="config-form" method="dialog">
+                <h2 id="config-title"></h2>
+                <p class="dialog-subtitle" id="config-subtitle"></p>
+                <div class="fields" id="config-fields"></div>
+                <p class="form-error" id="config-error" role="alert" hidden></p>
+                <div class="dialog-buttons">
+                    <button type="button" class="button" data-close>Cancel</button>
+                    <button type="submit" class="button primary">Save</button>
+                </div>
+            </form>
+        </dialog>
 
-</body>
+        <dialog class="dialog" id="units-dialog" aria-labelledby="units-title">
+            <form id="units-form" method="dialog">
+                <h2 id="units-title"></h2>
+                <p class="dialog-subtitle" id="units-message"></p>
+                <fieldset class="choices" id="units-choices">
+                    <legend class="visually-hidden">Units</legend>
+                </fieldset>
+                <div class="dialog-buttons">
+                    <button type="button" class="button" data-close>Cancel</button>
+                    <button type="submit" class="button primary" id="units-submit"></button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog class="dialog" id="token-dialog" aria-labelledby="token-title">
+            <form id="token-form" method="dialog">
+                <h2 id="token-title">Evok API token</h2>
+                <p class="dialog-subtitle" id="token-message"></p>
+                <div class="fields">
+                    <div class="field">
+                        <label for="token-field"
+                            >Token (token or read_token of apis in the configuration of Evok)</label
+                        >
+                        <input type="password" id="token-field" autocomplete="off" />
+                    </div>
+                </div>
+                <div class="dialog-buttons">
+                    <button type="button" class="button" id="token-clear">Forget token</button>
+                    <button type="button" class="button" data-close>Cancel</button>
+                    <button type="submit" class="button primary">Save</button>
+                </div>
+            </form>
+        </dialog>
+    </body>
 </html>
