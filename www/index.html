@@ -113,6 +113,7 @@
         <div id="configs" class="ui-content" data-inset="true">
         	<div id="unipi_save_all_button_div">
         		<button class="ui-btn ui-corner-all" id="unipi_save_all_button">Save current state to Flash</button>
+        		<button class="ui-btn ui-corner-all" id="unipi_token_button">Evok API token</button>
         	</div>
         </div>
         <!-- /configs -->
@@ -124,6 +125,18 @@
     <div data-role="popup" id="unipi_config_form_div">
     	<form id="unipi_config_form">
     		<div style="padding:20px 20px;" class="" id="unipi_config_form_inner_div">
+    		</div>
+    	</form>
+    </div>
+    <div data-role="popup" id="unipi_token_popup">
+    	<form id="unipi_token_form">
+    		<div style="padding:20px 20px;">
+    			<h3>Evok API token</h3>
+    			<p id="unipi_token_message"></p>
+    			<label for="unipi_token_field">Token (apis: token or read_token of the configuration of Evok):</label>
+    			<input type="password" id="unipi_token_field" autocomplete="off">
+    			<input type="submit" value="Submit">
+    			<button type="button" class="ui-btn ui-corner-all" id="unipi_token_clear_button">Forget token</button>
     		</div>
     	</form>
     </div>

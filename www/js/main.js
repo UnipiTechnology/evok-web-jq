@@ -3,6 +3,79 @@ var api_url = location.protocol + "//" + location.host;
 
 var ws = null;
 
+// The token of Evok (token or read_token of apis in its configuration), "" when Evok requires none. It is kept
+// in the browser, REST sends it in the header Authorization, the WebSocket in the query argument token.
+var api_token = loadToken();
+// a request was refused by 401, the WebSocket is not connected until a token is entered
+var auth_required = false;
+
+function loadToken() {
+    try {
+        return localStorage.getItem("evok_token") || "";
+    } catch (error) {
+        return "";
+    }
+}
+
+function saveToken(token) {
+    try {
+        if (token) {
+            localStorage.setItem("evok_token", token);
+        } else {
+            localStorage.removeItem("evok_token");
+        }
+    } catch (error) {}
+}
+
+$.ajaxSetup({
+    beforeSend: function (xhr) {
+        if (api_token) {
+            xhr.setRequestHeader("Authorization", "Bearer " + api_token);
+        }
+    },
+});
+
+$(document).ajaxError(function (event, xhr) {
+    if (xhr.status == 401) {
+        requestToken();
+    }
+});
+
+function openTokenPopup(message) {
+    $("#unipi_token_message").text(message);
+    $("#unipi_token_field").val("");
+    $("#unipi_token_popup").popup("open");
+}
+
+function requestToken() {
+    if (auth_required) {
+        return;
+    }
+    auth_required = true;
+    openTokenPopup(api_token ? "Evok refused the token." : "Evok requires a token.");
+}
+
+function setToken(token) {
+    api_token = token;
+    saveToken(token);
+    auth_required = false;
+    $("#unipi_token_popup").popup("close");
+    // reconnect the WebSocket with the new token
+    if (ws) {
+        ws.close();
+    } else {
+        webSocketRegister();
+    }
+    updateValues();
+}
+
+// The error of a request, 401 is handled by the dialog of the token
+function showApiError(text, xhr) {
+    if (xhr.status != 401) {
+        alert(text + apiErrorText(xhr));
+    }
+}
+
 var device_counts = {};
 // the note of a device without the communication by its signature, "" when it is ok
 var comm_states = {};
@@ -1172,6 +1245,18 @@ $(document).ready(function () {
     $("#unipi_save_all_button").on("click", function (event) {
         saveAllButtonHandler(event);
     });
+    $("#unipi_token_button").on("click", function (event) {
+        event.preventDefault();
+        openTokenPopup("");
+    });
+    $("#unipi_token_form").on("submit", function (event) {
+        event.preventDefault();
+        setToken($("#unipi_token_field").val().trim());
+    });
+    $("#unipi_token_clear_button").on("click", function (event) {
+        event.preventDefault();
+        setToken("");
+    });
 });
 
 function saveAllButtonHandler(event) {
@@ -1190,13 +1275,13 @@ function saveAllButtonHandler(event) {
                     data: { value: 1 },
                     success: function (data) {},
                     error: function (xhr) {
-                        alert("Error saving FW data of " + nv_save.circuit + ": " + apiErrorText(xhr));
+                        showApiError("Error saving FW data of " + nv_save.circuit + ": ", xhr);
                     },
                 });
             });
         },
         error: function (xhr) {
-            alert("Error saving FW data: " + apiErrorText(xhr));
+            showApiError("Error saving FW data: ", xhr);
         },
     });
 
@@ -1207,7 +1292,7 @@ function saveAllButtonHandler(event) {
         data: { save: 1 },
         success: function (data) {},
         error: function (xhr) {
-            alert("Error saving aliases: " + apiErrorText(xhr));
+            showApiError("Error saving aliases: ", xhr);
         },
     });
 }
@@ -1340,7 +1425,7 @@ function configFormSubmitHandler(event) {
                 }
             },
             error: function (xhr) {
-                alert("Operation failed with the following error: " + apiErrorText(xhr));
+                showApiError("Operation failed with the following error: ", xhr);
             },
         });
     }
@@ -1348,13 +1433,19 @@ function configFormSubmitHandler(event) {
 
 function webSocketRegister() {
     if ("WebSocket" in window) {
-        if (ws) {
+        if (ws || auth_required) {
             return;
         }
         var loc = window.location;
         uri = (loc.protocol === "https:" ? "wss://" : "ws://") + loc.host;
 
-        ws = new WebSocket(uri + "/ws");
+        var ws_url = uri + "/ws";
+        if (api_token) {
+            // a browser cannot set a header of a WebSocket
+            ws_url += "?token=" + encodeURIComponent(api_token);
+        }
+        ws = new WebSocket(ws_url);
+        var opened = false;
 
         if (!ws) {
             setTimeout(webSocketRegister, 1000);
@@ -1367,6 +1458,7 @@ function webSocketRegister() {
         };
 
         ws.onopen = function () {
+            opened = true;
             updateValues();
         };
 
@@ -1384,8 +1476,12 @@ function webSocketRegister() {
         };
 
         ws.onclose = function () {
-            setTimeout(webSocketRegister, 1000);
             ws = null;
+            // a refused WebSocket (e.g. 401 of the token) tells no reason, REST reports it
+            if (!opened) {
+                updateValues();
+            }
+            setTimeout(webSocketRegister, 1000);
         };
 
         ws.onerror = function () {
@@ -1409,6 +1505,6 @@ function makePostRequest(action, params) {
 
 // A refused change (e.g. 409 of a running sequence) leaves the UI in the requested state, reload the real one
 function postRequestFailed(xhr) {
-    alert("Operation failed with the following error: " + apiErrorText(xhr));
+    showApiError("Operation failed with the following error: ", xhr);
     updateValues();
 }
