@@ -157,14 +157,17 @@ function populateConfigForm(form, device, circuit, data) {
             break;
         }
         case "do": {
+            // Evok sets the mode by the PWM duty cycle, PWM above 0 %, Simple at 0 %; the mode is not sent
             if (data.hasOwnProperty("modes") && data.hasOwnProperty("mode")) {
                 var mode_select_field = $("<select>", {
                     name: "unipi_config_form_mode_select_field",
                     "data-iconpos": "left",
                     id: "unipi_config_form_mode_select_field",
+                    disabled: "disabled",
+                    title: "The mode is set by the PWM duty cycle: PWM above 0 %, Simple at 0 %",
                 });
                 var mode_label = $("<label>", { for: "unipi_config_form_mode_select_field" });
-                mode_label.text("Mode:");
+                mode_label.text("Mode (set by the PWM duty cycle):");
                 var selected_mode = data.mode;
                 $.each(data.modes, function (index, value) {
                     var option_field;
@@ -197,6 +200,13 @@ function populateConfigForm(form, device, circuit, data) {
                 });
                 pwm_duty_label = $("<label>", { for: "unipi_config_form_pwm_duty_field" });
                 pwm_duty_label.text("PWM Duty Cycle (in %):");
+                pwm_duty_text_field.on("input change", function () {
+                    var mode = parseFloat(this.value) > 0 ? "PWM" : "Simple";
+                    var select = $("#unipi_config_form_mode_select_field");
+                    if (select.find("option[value=" + mode + "]").length) {
+                        select.val(mode).selectmenu("refresh");
+                    }
+                });
                 form.append([pwm_freq_label, pwm_freq_text_field, pwm_duty_label, pwm_duty_text_field]);
             }
             break;
@@ -1448,6 +1458,10 @@ function createConfigPostRequestDict(arg_fields) {
     for (var i = 0; i < arg_fields.length; i++) {
         switch (arg_fields[i].id) {
             case "unipi_config_form_mode_select_field": {
+                // the mode of a DO is set by its PWM duty cycle
+                if (arg_fields[i].disabled) {
+                    break;
+                }
                 outp["mode"] = arg_fields[i].value;
                 break;
             }
