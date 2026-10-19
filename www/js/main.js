@@ -19,7 +19,8 @@ $.postJSON = function (url, data, success, args) {
 };
 
 var legacy_api = true;
-var api_port = location.port || (location.protocol === "https:" ? "443" : "80");
+// the API is served by the same server as the page (nginx forwards it to Evok)
+var api_url = location.protocol + "//" + location.host;
 
 var ws = null;
 var use_polling = false;
@@ -1071,7 +1072,7 @@ function updateValues() {
     if (legacy_api) {
         $.ajax({
             crossDomain: true,
-            url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/all",
+            url: api_url + "/rest/all",
             dataType: "json",
             success: function (data) {
                 $("#unipi_loading_spinner").css("visibility", "hidden");
@@ -1091,7 +1092,7 @@ function updateValues() {
     } else {
         $.ajax({
             crossDomain: true,
-            url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/all",
+            url: api_url + "/rest/all",
             dataType: "json",
             success: function (data) {
                 $("#unipi_loading_spinner").css("visibility", "hidden");
@@ -1139,7 +1140,7 @@ function configButtonHandler(event) {
     $("#unipi_config_form_inner_div").append(config_circuit_header);
     $.ajax({
         crossDomain: true,
-        url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/" + device + "/" + circuit + "/",
+        url: api_url + "/rest/" + device + "/" + circuit + "/",
         dataType: "json",
         success: function (data) {
             configButtonRestSuccessCallback(data);
@@ -1173,13 +1174,13 @@ function saveAllButtonHandler(event) {
     // the settings of a Modbus unit are saved by its device nv_save, the units without it are not listed
     $.ajax({
         crossDomain: true,
-        url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/nv_save/all",
+        url: api_url + "/rest/nv_save/all",
         dataType: "json",
         success: function (data) {
             $.each(data, function (index, nv_save) {
                 $.ajax({
                     crossDomain: true,
-                    url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/nv_save/" + nv_save.circuit,
+                    url: api_url + "/rest/nv_save/" + nv_save.circuit,
                     type: "POST",
                     data: { value: 1 },
                     success: function (data) {},
@@ -1196,7 +1197,7 @@ function saveAllButtonHandler(event) {
 
     $.ajax({
         crossDomain: true,
-        url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/run/alias",
+        url: api_url + "/rest/run/alias",
         type: "POST",
         data: { save: 1 },
         success: function (data) {},
@@ -1303,7 +1304,7 @@ function configFormSubmitHandler(event) {
         var post_request_dict = createConfigPostRequestDict(event.originalEvent.target.elements);
         $.ajax({
             crossDomain: true,
-            url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/" + device + "/" + circuit + "/",
+            url: api_url + "/rest/" + device + "/" + circuit + "/",
             type: "POST",
             data: post_request_dict,
             success: function (data) {
@@ -1350,7 +1351,7 @@ function webSocketRegister() {
             return;
         }
         var loc = window.location;
-        uri = (loc.protocol === "https:" ? "wss://" : "ws://") + loc.hostname + ":" + api_port;
+        uri = (loc.protocol === "https:" ? "wss://" : "ws://") + loc.host;
 
         ws = new WebSocket(uri + "/ws");
 
@@ -1400,7 +1401,7 @@ function makePostRequest(action, params) {
     if (legacy_api) {
         $.ajax({
             crossDomain: true,
-            url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/" + action,
+            url: api_url + "/rest/" + action,
             type: "POST",
             data: params,
             success: function (data) {},
@@ -1411,7 +1412,7 @@ function makePostRequest(action, params) {
 
         $.ajax({
             crossDomain: true,
-            url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/" + action,
+            url: api_url + "/rest/" + action,
             dataType: "application/json",
             type: "POST",
             data: JSON.stringify(params),
