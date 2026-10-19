@@ -26,7 +26,6 @@ var use_polling = false;
 var timer = null;
 
 var device_counts = {};
-var wd_device_cache = [];
 configuratible_devices = ["di", "ro", "do", "ai", "ao", "led", "wd", "temp"];
 
 function compare(a, b) {
@@ -41,6 +40,28 @@ function compare(a, b) {
 
 function sortResults(data) {
     return data.sort(compare);
+}
+
+// A value of Evok can be null (before the first scan) or a string ('NaN', 'Infinity')
+function formatNumber(value, digits) {
+    if (value == null) {
+        return "N/A";
+    }
+    if (typeof value === "number") {
+        return value.toFixed(digits);
+    }
+    return String(value);
+}
+
+// The text of an error reply of Evok: {"success": false, "errors": {"<type>": "<message>"}}
+function apiErrorText(xhr) {
+    var reply = xhr.responseJSON;
+    if (reply && reply.errors) {
+        return $.map(reply.errors, function (message, type) {
+            return type + ": " + message;
+        }).join("\n");
+    }
+    return xhr.status + " " + xhr.statusText;
 }
 
 function populateConfigForm(form, device, circuit, data) {
@@ -254,31 +275,6 @@ function populateConfigForm(form, device, circuit, data) {
                 var timeout_label = $("<label>", { for: "unipi_config_form_timeout_field" });
                 timeout_label.text("Command Watchdog trigger timeout (in ms):");
                 form.append([timeout_label, timeout_text_field]);
-            }
-            if (data.hasOwnProperty("nv_save")) {
-                var nv_save_select_field = $("<select>", {
-                    name: "unipi_config_form_nv_save_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_nv_save_select_field",
-                });
-                var nv_save_label = $("<label>", { for: "unipi_config_form_nv_save_select_field" });
-                nv_save_label.text("Save Current Board Configuration As Default On Manual Reset:");
-                var selected_mode = data.nv_save;
-                $.each([0, 1], function (index, value) {
-                    var option_field;
-                    if (selected_mode == value) {
-                        option_field = $("<option>", { value: value, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: value });
-                    }
-                    if (value == 0) {
-                        option_field.text("Disabled");
-                    } else {
-                        option_field.text("Enabled");
-                    }
-                    nv_save_select_field.append(option_field);
-                });
-                form.append([nv_save_label, nv_save_select_field]);
             }
             if (data.hasOwnProperty("was_wd_reset")) {
                 var wd_reset_select_field = $("<select>", {
@@ -536,8 +532,6 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
     device_properties["uart_stopb_modes"] = [""];
     device_properties["uart_stopb_mode"] = "";
     device_properties["watchdog_timeout"] = 5000;
-    device_properties["watchdog_nv_save"] = 0;
-    device_properties["watchdog_reset"] = 0;
     device_properties["watchdog_was_wd_reset"] = 0;
     device_properties["wifi_ap_state"] = 0;
     device_properties["wifi_eth0_masq"] = 0;
@@ -547,9 +541,9 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
             if ("unit" in msg && msg.unit != null) {
                 device_properties["unit"] = msg.unit;
                 if (msg.unit === "") {
-                    device_properties["value"] = msg.value;
+                    device_properties["value"] = msg.value == null ? "N/A" : msg.value;
                 } else {
-                    device_properties["value"] = msg.value.toFixed(3);
+                    device_properties["value"] = formatNumber(msg.value, 3);
                 }
             } else {
                 device_properties["value"] = "Disabled";
@@ -561,7 +555,7 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
             if ("unit" in msg && msg.unit != null) {
                 device_properties["unit"] = msg.unit;
             }
-            device_properties["value"] = msg.value.toFixed(1);
+            device_properties["value"] = formatNumber(msg.value, 1);
             break;
         }
         case "ro": {
@@ -596,9 +590,7 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
         }
         case "wd": {
             device_properties["device_name"] = "Board Watchdog " + circuit_display_name;
-            device_properties["watchdog_timeout"] = msg.timeout[0];
-            device_properties["watchdog_nv_save"] = msg.nv_save;
-            device_properties["watchdog_reset"] = msg.reset;
+            device_properties["watchdog_timeout"] = msg.timeout;
             device_properties["watchdog_was_wd_reset"] = msg.was_wd_reset;
             break;
         }
@@ -611,13 +603,13 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
                     device_properties["value"] = "N/A";
                     device_properties["humidity"] = "N/A";
                 } else {
-                    device_properties["value"] = parseFloat(msg.temp).toFixed(1);
-                    device_properties["humidity"] = msg.humidity.toFixed(1);
+                    device_properties["value"] = formatNumber(msg.temp, 1);
+                    device_properties["humidity"] = formatNumber(msg.humidity, 1);
                     device_properties["unit"] = "&deg;C";
                 }
             } else {
                 device_properties["device_name"] = "Sensor " + device_properties["type"] + " - " + circuit_display_name;
-                if (msg.value == null) {
+                if (typeof msg.value !== "number") {
                     device_properties["value"] = "N/A";
                 } else {
                     device_properties["value"] = msg.value.toFixed(1);
@@ -642,11 +634,16 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
         }
         case "data_point":
             {
-                if (msg.value.toString().includes(".")) {
+                if (msg.value == null) {
+                    device_properties["value"] = "N/A";
+                } else if (typeof msg.value === "number" && !Number.isInteger(msg.value)) {
                     device_properties["value"] = msg.value.toFixed(2);
                 }
-                device_properties["device_name"] = "Value register " + circuit_display_name + " <br>" + msg.name;
-                device_properties["unit"] = msg.unit;
+                device_properties["device_name"] = "Value register " + circuit_display_name;
+                if (msg.name) {
+                    device_properties["device_name"] += " <br>" + msg.name;
+                }
+                device_properties["unit"] = msg.unit || "";
                 break;
             }
             break;
@@ -816,7 +813,6 @@ function syncDevice(msg) {
                 } else {
                     main_el.textContent = enabled_text + " [Triggered]";
                 }
-                wd_device_cache.push(circuit);
                 break;
             }
             case "light_channel": {
@@ -890,7 +886,7 @@ function syncDevice(msg) {
                 $("#" + main_el.id).flipswitch();
                 $("#outputs_list").listview("refresh");
                 $("#" + main_el.id).bind("change", function (event, ui) {
-                    $.postJSON("ro/" + circuit, { value: $(this).val });
+                    makePostRequest("ro/" + circuit, "value=" + $(this).val());
                 });
                 break;
             }
@@ -901,7 +897,7 @@ function syncDevice(msg) {
                 $("#" + main_el.id).flipswitch();
                 $("#outputs_list").listview("refresh");
                 $("#" + main_el.id).bind("change", function (event, ui) {
-                    $.postJSON("do/" + circuit, { value: $(this).val });
+                    makePostRequest("do/" + circuit, "value=" + $(this).val());
                 });
                 break;
             }
@@ -990,9 +986,11 @@ function syncDevice(msg) {
                 break;
             }
             case "ao": {
-                $("#" + device_signature + "_value")
-                    .val(device_properties["value"])
-                    .slider("refresh");
+                if (typeof msg.value === "number") {
+                    $("#" + device_signature + "_value")
+                        .val(device_properties["value"])
+                        .slider("refresh");
+                }
                 break;
             }
             case "di": {
@@ -1172,17 +1170,28 @@ $(document).ready(function () {
 
 function saveAllButtonHandler(event) {
     event.preventDefault();
-    $.each(wd_device_cache, function (index, value) {
-        $.ajax({
-            crossDomain: true,
-            url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/wd/" + value + "/",
-            type: "POST",
-            data: { nv_save: 1 },
-            success: function (data) {},
-            error: function (data) {
-                alert("Error saving FW data: " + data.errors);
-            },
-        });
+    // the settings of a Modbus unit are saved by its device nv_save, the units without it are not listed
+    $.ajax({
+        crossDomain: true,
+        url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/nv_save/all",
+        dataType: "json",
+        success: function (data) {
+            $.each(data, function (index, nv_save) {
+                $.ajax({
+                    crossDomain: true,
+                    url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/nv_save/" + nv_save.circuit,
+                    type: "POST",
+                    data: { value: 1 },
+                    success: function (data) {},
+                    error: function (xhr) {
+                        alert("Error saving FW data of " + nv_save.circuit + ": " + apiErrorText(xhr));
+                    },
+                });
+            });
+        },
+        error: function (xhr) {
+            alert("Error saving FW data: " + apiErrorText(xhr));
+        },
     });
 
     $.ajax({
@@ -1191,8 +1200,8 @@ function saveAllButtonHandler(event) {
         type: "POST",
         data: { save: 1 },
         success: function (data) {},
-        error: function (data) {
-            alert("Error saving aliases: " + data.errors);
+        error: function (xhr) {
+            alert("Error saving aliases: " + apiErrorText(xhr));
         },
     });
 }
@@ -1262,10 +1271,6 @@ function createConfigPostRequestDict(arg_fields) {
                 outp["timeout"] = parseInt(arg_fields[i].value);
                 break;
             }
-            case "unipi_config_form_nv_save_select_field": {
-                outp["nv_save"] = parseInt(arg_fields[i].value);
-                break;
-            }
             case "unipi_config_form_wd_reset_select_field": {
                 outp["reset"] = parseInt(arg_fields[i].value);
                 break;
@@ -1329,11 +1334,11 @@ function configFormSubmitHandler(event) {
                         }
                     }
                 } else {
-                    alert("Operation failed with the following error: " + data.errors["__all__"]);
+                    alert("Operation failed with the following error: " + apiErrorText({ responseJSON: data }));
                 }
             },
-            error: function (data) {
-                alert("Operation failed with the following error: " + data.message);
+            error: function (xhr) {
+                alert("Operation failed with the following error: " + apiErrorText(xhr));
             },
         });
     }
@@ -1399,7 +1404,7 @@ function makePostRequest(action, params) {
             type: "POST",
             data: params,
             success: function (data) {},
-            error: function (data) {},
+            error: postRequestFailed,
         });
     } else {
         var to_send = {};
@@ -1411,7 +1416,13 @@ function makePostRequest(action, params) {
             type: "POST",
             data: JSON.stringify(params),
             success: function (data) {},
-            error: function (data) {},
+            error: postRequestFailed,
         });
     }
+}
+
+// A refused change (e.g. 409 of a running sequence) leaves the UI in the requested state, reload the real one
+function postRequestFailed(xhr) {
+    alert("Operation failed with the following error: " + apiErrorText(xhr));
+    updateValues();
 }
