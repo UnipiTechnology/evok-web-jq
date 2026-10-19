@@ -2,10 +2,14 @@
 
 # EVOK WEB jQ
 
-Evok web is simple web application based on jQuery Mobile for [Evok].
-Web presents the Evok REST API and Websocket.
+Evok web is a simple web application for [Evok]: it shows the devices of the controller grouped by its units,
+switches the outputs and configures the devices by the JSON API and the WebSocket of Evok. It is plain
+HTML, CSS and JavaScript (`www/`) without libraries and without a build, it works without the Internet.
 
 To publish website on server, you need to configure and run a http server like [Nginx] or [Apache]
+(`nginx-site.conf`), which serves `www/` and forwards `/json`, `/rest`, `/bulk`, `/rpc`, `/version` and `/ws` to Evok.
+
+The code is formatted by Prettier: `npx prettier@3.3.3 --write www/`.
 
 
 ## Installation

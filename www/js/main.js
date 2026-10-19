@@ -1,110 +1,139 @@
-// the API is served by the same server as the page (nginx forwards it to Evok)
-var api_url = location.protocol + "//" + location.host;
+"use strict";
 
-var ws = null;
+// The API is served by the same server as the page (nginx forwards it to Evok)
+const API_URL = location.protocol + "//" + location.host;
+const WS_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws";
 
-// The token of Evok (token or read_token of apis in its configuration), "" when Evok requires none. It is kept
-// in the browser, REST sends it in the header Authorization, the WebSocket in the query argument token.
-var api_token = loadToken();
-// a request was refused by 401, the WebSocket is not connected until a token is entered
-var auth_required = false;
+// the unit of the 1-Wire sensors in the list of the units
+const ONEWIRE = "1-Wire";
+// the DirectSwitch modes of a DI in the Simple mode, Evok sends ds_modes only in the DirectSwitch mode;
+// all HW definitions of Evok have these ones
+const DS_MODES = ["Simple", "Inverted", "Toggle"];
+// the extra choice of the aliases in the dialog of saving, a circuit of a unit has no space
+const SAVE_ALIASES = "aliases of devices";
 
-function loadToken() {
+// the cards of a unit in their order, a card is shown when the unit has a device of its types
+const CARDS = [
+    { title: "Digital inputs", devs: ["di"], filter: "inputs", kind: "tiles" },
+    { title: "Digital outputs", devs: ["do"], filter: "outputs", kind: "rows" },
+    { title: "Relay outputs", devs: ["ro"], filter: "outputs", kind: "rows" },
+    { title: "User LEDs", devs: ["led"], filter: "outputs", kind: "rows" },
+    { title: "Analog inputs", devs: ["ai"], filter: "analog", kind: "tiles" },
+    { title: "Analog outputs", devs: ["ao"], filter: "analog", kind: "rows" },
+    { title: "Data points", devs: ["data_point"], filter: "inputs", kind: "tiles" },
+    { title: "Sensors", devs: ["temp", "1wdevice"], filter: "inputs", kind: "tiles" },
+];
+const FILTERS = [
+    ["all", "All"],
+    ["inputs", "Inputs"],
+    ["outputs", "Outputs"],
+    ["analog", "Analog"],
+];
+// the device types with a dialog of their configuration
+const CONFIGURABLE = ["di", "do", "ro", "led", "ai", "ao", "wd", "temp", "1wdevice"];
+
+const collator = new Intl.Collator(undefined, { numeric: true });
+
+const state = {
+    // the last state of each device by "<dev>/<circuit>"
+    devices: new Map(),
+    // the running sequencer of an output by the key of the output
+    sequencers: new Map(),
+    // the settings of the serial port of a Modbus RTU unit by its circuit, e.g. "19200 8N1"
+    serialSettings: {},
+    // the name of the serial bus of a Modbus RTU unit by its circuit, e.g. "RS485_1"
+    serialBuses: {},
+    // the update functions of the devices shown by the key of the device
+    views: new Map(),
+    unit: null,
+    filter: "all",
+    // the token of Evok (token or read_token of apis in its configuration), "" when Evok requires none
+    token: loadSetting("evok_token") || "",
+    // a request was refused by 401, the WebSocket is not connected until a token is entered
+    authRequired: false,
+    ws: null,
+    version: "",
+};
+
+// # Helpers
+
+function loadSetting(name) {
     try {
-        return localStorage.getItem("evok_token") || "";
+        return localStorage.getItem(name);
     } catch (error) {
-        return "";
+        return null;
     }
 }
 
-function saveToken(token) {
+function saveSetting(name, value) {
     try {
-        if (token) {
-            localStorage.setItem("evok_token", token);
+        if (value === null || value === "") {
+            localStorage.removeItem(name);
         } else {
-            localStorage.removeItem("evok_token");
+            localStorage.setItem(name, value);
         }
     } catch (error) {}
 }
 
-$.ajaxSetup({
-    beforeSend: function (xhr) {
-        if (api_token) {
-            xhr.setRequestHeader("Authorization", "Bearer " + api_token);
+// An element: h("div", {class: "tile", onclick: f}, child, ...), a child is a node, a text or null
+function h(tag, attrs, ...children) {
+    const element = document.createElement(tag);
+    for (const [name, value] of Object.entries(attrs || {})) {
+        if (value === null || value === undefined || value === false) {
+            continue;
         }
-    },
-});
-
-$(document).ajaxError(function (event, xhr) {
-    if (xhr.status == 401) {
-        requestToken();
+        if (name.startsWith("on")) {
+            element.addEventListener(name.slice(2), value);
+        } else if (name === "class") {
+            element.className = value;
+        } else if (value === true) {
+            element.setAttribute(name, "");
+        } else {
+            element.setAttribute(name, value);
+        }
     }
-});
-
-function openTokenPopup(message) {
-    $("#unipi_token_message").text(message);
-    $("#unipi_token_field").val("");
-    $("#unipi_token_popup").popup("open");
+    for (const child of children.flat()) {
+        if (child !== null && child !== undefined && child !== false) {
+            element.append(child);
+        }
+    }
+    return element;
 }
 
-function requestToken() {
-    if (auth_required) {
-        return;
-    }
-    auth_required = true;
-    openTokenPopup(api_token ? "Evok refused the token." : "Evok requires a token.");
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function gearIcon() {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("width", "16");
+    svg.setAttribute("height", "16");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("aria-hidden", "true");
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute(
+        "d",
+        "M6.6 1.5h2.8l.4 1.9 1.3.7 1.8-.7 1.4 2.4-1.4 1.3v1.6l1.4 1.3-1.4 2.4-1.8-.7-1.3.7-.4 1.9H6.6l-.4-1.9-1.3-.7-1.8.7-1.4-2.4 1.4-1.3V7.1L1.7 5.8l1.4-2.4 1.8.7 1.3-.7z",
+    );
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.2");
+    path.setAttribute("stroke-linejoin", "round");
+    const circle = document.createElementNS(SVG_NS, "circle");
+    circle.setAttribute("cx", "8");
+    circle.setAttribute("cy", "8");
+    circle.setAttribute("r", "2");
+    circle.setAttribute("stroke", "currentColor");
+    circle.setAttribute("stroke-width", "1.2");
+    svg.append(path, circle);
+    return svg;
 }
 
-function setToken(token) {
-    api_token = token;
-    saveToken(token);
-    auth_required = false;
-    $("#unipi_token_popup").popup("close");
-    // reconnect the WebSocket with the new token
-    if (ws) {
-        ws.close();
-    } else {
-        webSocketRegister();
-    }
-    updateValues();
-}
-
-// The error of a request, 401 is handled by the dialog of the token
-function showApiError(text, xhr) {
-    if (xhr.status != 401) {
-        alert(text + apiErrorText(xhr));
-    }
-}
-
-var device_counts = {};
-// the note of a device without the communication by its signature, "" when it is ok
-var comm_states = {};
-// the state of the running sequencer of an output by the signature of the output
-var sequencer_states = {};
-// the settings of the serial port of a Modbus RTU unit by its circuit, e.g. "19200 8-N-1"
-var serial_settings = {};
-// the DirectSwitch modes of a DI in the Simple mode, Evok sends ds_modes only in the DirectSwitch mode;
-// all HW definitions of Evok have these ones
-var DS_MODES = ["Simple", "Inverted", "Toggle"];
-configuratible_devices = ["di", "ro", "do", "ai", "ao", "led", "wd", "temp"];
-
-function compare(a, b) {
-    if (a.circuit < b.circuit) {
-        return -1;
-    }
-    if (a.circuit > b.circuit) {
-        return 1;
-    }
-    return 0;
-}
-
-function sortResults(data) {
-    return data.sort(compare);
+function keyOf(dev, circuit) {
+    return dev + "/" + circuit;
 }
 
 // A value of Evok can be null (before the first scan) or a string ('NaN', 'Infinity')
 function formatNumber(value, digits) {
-    if (value == null) {
+    if (value === null || value === undefined) {
         return "N/A";
     }
     if (typeof value === "number") {
@@ -113,587 +142,75 @@ function formatNumber(value, digits) {
     return String(value);
 }
 
-// The text of an error reply of Evok: {"success": false, "errors": {"<type>": "<message>"}}
-function apiErrorText(xhr) {
-    var reply = xhr.responseJSON;
-    if (reply && reply.errors) {
-        return $.map(reply.errors, function (message, type) {
-            return type + ": " + message;
-        }).join("\n");
-    }
-    return xhr.status + " " + xhr.statusText;
+// 2_01 is shown as 2.01, ext2_01 as ext2.01
+function circuitName(circuit) {
+    const pos = circuit.lastIndexOf("_");
+    return pos > 0 ? circuit.slice(0, pos) + "." + circuit.slice(pos + 1) : circuit;
 }
 
-function populateConfigForm(form, device, circuit, data) {
-    var alias = "";
-    if (data.hasOwnProperty("alias")) {
-        alias = data.alias;
-    }
-    switch (device) {
-        case "ai":
-        case "ao": {
-            if (data.hasOwnProperty("modes") && data.hasOwnProperty("mode")) {
-                var mode_select_field = $("<select>", {
-                    name: "unipi_config_form_mode_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_mode_select_field",
-                });
-                var label_mode = $("<label>", { for: "unipi_config_form_mode_select_field" });
-                label_mode.text("Mode:");
-                var selected_mode = data.mode;
-                $.each(data.modes, function (index, value) {
-                    var option_field;
-                    if (selected_mode == index) {
-                        option_field = $("<option>", { value: index, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: index });
-                    }
-                    desc = "";
-                    if ("unit" in value && "range" in value) {
-                        desc = " (" + value.range[0] + " - " + value.range[1] + " " + value.unit + ")";
-                    }
-                    option_field.text(index + desc);
-                    mode_select_field.append(option_field);
-                });
-                form.append([label_mode, mode_select_field]);
-            }
-            break;
-        }
-        case "do": {
-            // Evok sets the mode by the PWM duty cycle, PWM above 0 %, Simple at 0 %; the mode is not sent
-            if (data.hasOwnProperty("modes") && data.hasOwnProperty("mode")) {
-                var mode_select_field = $("<select>", {
-                    name: "unipi_config_form_mode_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_mode_select_field",
-                    disabled: "disabled",
-                    title: "The mode is set by the PWM duty cycle: PWM above 0 %, Simple at 0 %",
-                });
-                var mode_label = $("<label>", { for: "unipi_config_form_mode_select_field" });
-                mode_label.text("Mode (set by the PWM duty cycle):");
-                var selected_mode = data.mode;
-                $.each(data.modes, function (index, value) {
-                    var option_field;
-                    if (selected_mode == value) {
-                        option_field = $("<option>", { value: value, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: value });
-                    }
-                    option_field.text(value);
-                    mode_select_field.append(option_field);
-                });
-                form.append([mode_label, mode_select_field]);
-            }
-            if (data.hasOwnProperty("pwm_freq") && data.hasOwnProperty("pwm_duty")) {
-                var pwm_freq_text_field = $("<input>", {
-                    type: "text",
-                    name: "unipi_config_form_pwm_freq_field",
-                    "data-wrapper-class": "ui-btn",
-                    id: "unipi_config_form_pwm_freq_field",
-                    value: data.pwm_freq,
-                });
-                pwm_freq_label = $("<label>", { for: "unipi_config_form_pwm_freq_field" });
-                pwm_freq_label.text("PWM Frequency (in Hz):");
-                var pwm_duty_text_field = $("<input>", {
-                    type: "text",
-                    name: "unipi_config_form_pwm_duty_field",
-                    "data-wrapper-class": "ui-btn",
-                    id: "unipi_config_form_pwm_duty_field",
-                    value: data.pwm_duty,
-                });
-                pwm_duty_label = $("<label>", { for: "unipi_config_form_pwm_duty_field" });
-                pwm_duty_label.text("PWM Duty Cycle (in %):");
-                pwm_duty_text_field.on("input change", function () {
-                    var mode = parseFloat(this.value) > 0 ? "PWM" : "Simple";
-                    var select = $("#unipi_config_form_mode_select_field");
-                    if (select.find("option[value=" + mode + "]").length) {
-                        select.val(mode).selectmenu("refresh");
-                    }
-                });
-                form.append([pwm_freq_label, pwm_freq_text_field, pwm_duty_label, pwm_duty_text_field]);
-            }
-            break;
-        }
-        case "ro":
-        case "led": {
-            break;
-        }
-        case "di": {
-            if (data.hasOwnProperty("debounce")) {
-                var debounce_text_field = $("<input>", {
-                    type: "text",
-                    name: "unipi_config_form_debounce_field",
-                    "data-wrapper-class": "ui-btn",
-                    id: "unipi_config_form_debounce_field",
-                    value: data.debounce,
-                });
-                var debounce_label = $("<label>", { for: "unipi_config_form_debounce_field" });
-                debounce_label.text("Debounce:");
-                form.append([debounce_label, debounce_text_field]);
-            }
-            if (data.hasOwnProperty("modes") && data.hasOwnProperty("mode")) {
-                var mode_select_field = $("<select>", {
-                    name: "unipi_config_form_mode_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_mode_select_field",
-                });
-                var mode_label = $("<label>", { for: "unipi_config_form_mode_select_field" });
-                mode_label.text("Mode:");
-                var selected_mode = data.mode;
-                $.each(data.modes, function (index, value) {
-                    var option_field;
-                    if (selected_mode == value) {
-                        option_field = $("<option>", { value: value, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: value });
-                    }
-                    option_field.text(value);
-                    mode_select_field.append(option_field);
-                });
-                form.append([mode_label, mode_select_field]);
-            }
-            if (data.hasOwnProperty("counter")) {
-                var counter_text_field = $("<input>", {
-                    type: "text",
-                    name: "unipi_config_form_counter_field",
-                    "data-wrapper-class": "ui-btn",
-                    id: "unipi_config_form_counter_field",
-                    value: data.counter,
-                });
-                var counter_label = $("<label>", { for: "unipi_config_form_counter_field" });
-                counter_label.text("Counter value:");
-                form.append([counter_label, counter_text_field]);
-            }
-            // Evok sends ds_mode and ds_modes only in the DirectSwitch mode, the DirectSwitch mode is chosen
-            // together with the mode; it is shown and sent only with the mode DirectSwitch
-            if (data.hasOwnProperty("modes") && data.modes.includes("DirectSwitch")) {
-                var ds_mode_select_field = $("<select>", {
-                    name: "unipi_config_form_ds_mode_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_ds_mode_select_field",
-                });
-                var ds_mode_label = $("<label>", { for: "unipi_config_form_ds_mode_select_field" });
-                ds_mode_label.text("DirectSwitch Mode:");
-                var selected_mode = data.ds_mode;
-                $.each(data.ds_modes || DS_MODES, function (index, value) {
-                    var option_field;
-                    if (selected_mode == value) {
-                        option_field = $("<option>", { value: value, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: value });
-                    }
-                    option_field.text(value);
-                    ds_mode_select_field.append(option_field);
-                });
-                var ds_mode_div = $("<div>").append([ds_mode_label, ds_mode_select_field]);
-                ds_mode_div.toggle(data.mode == "DirectSwitch");
-                mode_select_field.on("change", function () {
-                    ds_mode_div.toggle(this.value == "DirectSwitch");
-                });
-                form.append(ds_mode_div);
-            }
-            break;
-        }
-        case "wd": {
-            if (data.hasOwnProperty("value")) {
-                var enabled_select_field = $("<select>", {
-                    name: "unipi_config_form_enabled_select_field",
-                    "data-iconpos": "left",
-                    id: "unipi_config_form_enabled_select_field",
-                });
-                var enabled_label = $("<label>", { for: "unipi_config_form_enabled_select_field" });
-                enabled_label.text("Command Watchdog (reset device if no command in timeout ms):");
-                var selected_mode = data.value & 0b1;
-                $.each([0, 1], function (index, value) {
-                    var option_field;
-                    if (selected_mode == value) {
-                        option_field = $("<option>", { value: value, selected: "selected" });
-                    } else {
-                        option_field = $("<option>", { value: value });
-                    }
-                    if (value == 0) {
-                        option_field.text("Disabled");
-                    } else {
-                        option_field.text("Enabled");
-                    }
-                    enabled_select_field.append(option_field);
-                });
-                form.append([enabled_label, enabled_select_field]);
-            }
-            if (data.hasOwnProperty("timeout")) {
-                var timeout_text_field = $("<input>", {
-                    type: "text",
-                    name: "unipi_config_form_timeout_field",
-                    "data-wrapper-class": "ui-btn",
-                    id: "unipi_config_form_timeout_field",
-                    value: data.timeout,
-                });
-                var timeout_label = $("<label>", { for: "unipi_config_form_timeout_field" });
-                timeout_label.text("Command Watchdog trigger timeout (in ms):");
-                form.append([timeout_label, timeout_text_field]);
-            }
-            break;
-        }
-        case "temp": {
-            break;
-        }
-        case "1wdevice": {
-            break;
-        }
-        case "device_info": {
-            break;
-        }
-        case "register": {
-            break;
-        }
+// An alias of Evok has no spaces, they are shown and entered as spaces
+function aliasText(alias) {
+    return alias.replace(/_/g, " ");
+}
+
+function aliasValue(text) {
+    return text.trim().replace(/ /g, "_");
+}
+
+function displayName(msg) {
+    return msg.alias ? aliasText(msg.alias) : circuitName(msg.circuit);
+}
+
+// The unit of a device: the circuit of its Modbus unit, ONEWIRE, or null for the devices of no unit
+function unitOf(msg) {
+    switch (msg.dev) {
+        case "temp":
+        case "1wdevice":
+            return ONEWIRE;
+        case "modbus_slave":
+        case "wd":
+        case "nv_save":
+            return msg.circuit;
+        case "device_info":
+            // the controller has its model as the circuit, an extension its unit
+            return msg.family === "Extension" ? msg.circuit : null;
+        case "owbus":
+        case "owpower":
+        case "register":
+        case "sequencer":
+        case "serial_bus":
+        case "tcp_bus":
+        case "run":
+            return null;
         default: {
-            break;
-        }
-    }
-    var circuit_text_field = $("<input>", {
-        type: "text",
-        name: "unipi_config_form_circuit_field",
-        "data-wrapper-class": "ui-btn",
-        id: "unipi_config_form_circuit_field",
-        value: circuit,
-    });
-    var circuit_field_label = $("<label>", { for: "unipi_config_form_circuit_field" });
-    var device_text_field = $("<input>", {
-        type: "text",
-        name: "unipi_config_form_device_field",
-        "data-wrapper-class": "ui-btn",
-        id: "unipi_config_form_device_field",
-        value: device,
-    });
-    var device_field_label = $("<label>", { for: "unipi_config_form_device_field" });
-    form.append([circuit_field_label, circuit_text_field, device_field_label, device_text_field]);
-
-    if (device != "device_info") {
-        if (device != "wd") {
-            var decoded_alias = alias;
-            decoded_alias = decoded_alias.replace(/_/g, " ");
-            alias_text_field = $("<input>", {
-                type: "text",
-                name: "unipi_config_form_alias_field",
-                "data-wrapper-class": "ui-btn",
-                id: "unipi_config_form_alias_field",
-                value: decoded_alias,
-            });
-            alias_label = $("<label>", { for: "unipi_config_form_alias_field" });
-            alias_label.text("Alias:");
-            form.append([alias_label, alias_text_field]);
-        }
-        submit_button = $("<input>", { type: "submit", value: "Submit", id: "unipi_config_form_submit_button" });
-        form.append([submit_button]);
-    }
-    $("#unipi_config_form").on("submit", function (event) {
-        configFormSubmitHandler(event);
-    });
-    form.trigger("create");
-    circuit_text_field.parent().hide();
-    circuit_field_label.hide();
-    device_text_field.parent().hide();
-    device_field_label.hide();
-}
-
-function getConfigurationFormTitle(device) {
-    switch (device) {
-        case "ai": {
-            return "Analog Input Configuration";
-            break;
-        }
-        case "ao": {
-            return "Analog Output Configuration";
-            break;
-        }
-        case "ro": {
-            return "Relay Configuration";
-        }
-        case "do": {
-            return "Digital Output Configuration";
-        }
-        case "led": {
-            return "User LED Configuration";
-        }
-        case "di": {
-            return "Digital Input Configuration";
-        }
-        case "uart": {
-            return "UART Port Configuration";
-        }
-        case "wd": {
-            return "Board Watchdog Configuration";
-        }
-        case "temp": {
-            return "Temperature Sensor Configuration";
-        }
-        case "1wdevice": {
-            return "1Wire Device Configuration";
-        }
-        case "register": {
-            return "Modbus Register Configuration";
-        }
-        default: {
-            return "Unknown Device Type Configuration: " + device;
+            const pos = msg.circuit.lastIndexOf("_");
+            return pos > 0 ? msg.circuit.slice(0, pos) : msg.circuit;
         }
     }
 }
 
-function getNextUiBlockPosition(device) {
-    switch ((device_counts[device] - 1) % 5) {
-        case 0: {
-            return "ui-block-a";
-            break;
-        }
-        case 1: {
-            return "ui-block-b";
-            break;
-        }
-        case 2: {
-            return "ui-block-c";
-            break;
-        }
-        case 3: {
-            return "ui-block-d";
-            break;
-        }
-        case 4: {
-            return "ui-block-e";
-            break;
+function devicesOf(dev) {
+    const devices = [];
+    for (const msg of state.devices.values()) {
+        if (msg.dev === dev) {
+            devices.push(msg);
         }
     }
+    return devices.sort((a, b) => collator.compare(a.circuit, b.circuit));
 }
 
-function getDeviceCategoryName(device) {
-    switch (device) {
-        case "ai": {
-            return "Analog Inputs";
-            break;
-        }
-        case "ao": {
-            return "Analog Outputs";
-            break;
-        }
-        case "ro": {
-            return "Relay Outputs";
-        }
-        case "do": {
-            return "Digital Outputs";
-        }
-        case "led": {
-            return "User LEDs";
-        }
-        case "di": {
-            return "Digital Inputs";
-        }
-        case "wd": {
-            return "Board Watchdogs";
-        }
-        case "temp": {
-            return "Temperature Sensors";
-        }
-        case "1wdevice": {
-            return "1Wire Devices";
-        }
-        case "modbus_slave": {
-            return "Modbus slave";
-        }
-        case "register": {
-            return "Modbus Registers";
-        }
-        case "data_point": {
-            return "Data point";
-        }
-        default: {
-            return "Unknown Device Type";
-        }
-    }
+function controllerInfo() {
+    return devicesOf("device_info").find((info) => info.family !== "Extension") || null;
 }
 
-function populateConfigTab(device, circuit, circuit_display_name, msg) {
-    var translated_device = device;
-
-    if (translated_device in device_counts) {
-        device_counts[translated_device] += 1;
-    } else {
-        device_counts[translated_device] = 1;
-        config_div = document.createElement("div");
-        config_div.id = "unipi_" + translated_device + "_config_div";
-        config_div_label = document.createElement("h4");
-        config_div_label.id = "unipi_" + translated_device + "_config_div_label";
-        config_div_label.textContent = getDeviceCategoryName(translated_device);
-        config_div_grid = document.createElement("div");
-        config_div_grid.id = "unipi_" + translated_device + "_config_div_grid";
-        config_div_grid.className = "ui-grid-d ui-responsive";
-        config_div.appendChild(config_div_label);
-        config_div.appendChild(config_div_grid);
-        document.getElementById("configs").appendChild(config_div);
-    }
-
-    config_el_div = document.createElement("div");
-    config_el_div.id = "unipi_" + device + "_" + msg.circuit + "_config_div";
-    config_el_div.className = getNextUiBlockPosition(translated_device);
-    config_el = document.createElement("a");
-    config_el.id = "unipi_config_div_grid_anchor_" + device + "_" + msg.circuit;
-    config_el.className = "ui-btn ui-shadow ui-corner-all";
-    config_el.textContent = circuit_display_name;
-    config_el.href = "#" + device;
-    config_el_div.appendChild(config_el);
-    $(config_el).on("click", function (event) {
-        configButtonHandler(event);
-    });
-    document.getElementById("unipi_" + translated_device + "_config_div_grid").appendChild(config_el_div);
-}
-
-function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
-    var device_properties = {};
-    device_properties["device_name"] = "";
-    device_properties["type"] = msg.type;
-    device_properties["value"] = msg.value;
-    device_properties["humidity"] = "N/A";
-    device_properties["unit"] = "";
-    device_properties["device_info_sn"] = 0;
-    device_properties["device_info_name"] = "";
-    device_properties["uart_speed_modes"] = [""];
-    device_properties["uart_speed_mode"] = "";
-    device_properties["uart_parity_modes"] = [""];
-    device_properties["uart_parity_mode"] = "";
-    device_properties["uart_stopb_modes"] = [""];
-    device_properties["uart_stopb_mode"] = "";
-    device_properties["watchdog_timeout"] = 5000;
-    device_properties["watchdog_was_wd_reset"] = 0;
-    device_properties["wifi_ap_state"] = 0;
-    device_properties["wifi_eth0_masq"] = 0;
-    switch (device) {
-        case "ai": {
-            device_properties["device_name"] = "Analog Input " + circuit_display_name;
-            if ("unit" in msg && msg.unit != null) {
-                device_properties["unit"] = msg.unit;
-                if (msg.unit === "") {
-                    device_properties["value"] = msg.value == null ? "N/A" : msg.value;
-                } else {
-                    device_properties["value"] = formatNumber(msg.value, 3);
-                }
-            } else {
-                device_properties["value"] = "Disabled";
-            }
-            break;
-        }
-        case "ao": {
-            device_properties["device_name"] = "Analog Output " + circuit_display_name;
-            if ("unit" in msg && msg.unit != null) {
-                device_properties["unit"] = msg.unit;
-            }
-            device_properties["value"] = formatNumber(msg.value, 1);
-            break;
-        }
-        case "ro": {
-            device_properties["device_name"] = "Relay " + circuit_display_name;
-            break;
-        }
-        case "do": {
-            device_properties["device_name"] = "Digital Output " + circuit_display_name;
-            break;
-        }
-        case "led": {
-            device_properties["device_name"] = "ULED " + circuit_display_name;
-            break;
-        }
-        case "di": {
-            device_properties["device_name"] = "Input " + circuit_display_name;
-            device_properties["counter"] = msg.counter;
-            if ("bitvalue" in msg) {
-                device_properties["bitvalue"] = msg.bitvalue;
-            }
-            break;
-        }
-        case "uart": {
-            device_properties["device_name"] = "Serial Port " + circuit_display_name;
-            device_properties["uart_speed_modes"] = msg.speed_modes;
-            device_properties["uart_speed_mode"] = msg.speed_mode;
-            device_properties["uart_parity_modes"] = msg.parity_modes;
-            device_properties["uart_parity_mode"] = msg.parity_mode;
-            device_properties["uart_stopb_modes"] = msg.stopb_modes;
-            device_properties["uart_stopb_mode"] = msg.stopb_mode;
-            break;
-        }
-        case "wd": {
-            device_properties["device_name"] = "Board Watchdog " + circuit_display_name;
-            device_properties["watchdog_timeout"] = msg.timeout;
-            device_properties["watchdog_was_wd_reset"] = msg.was_wd_reset;
-            break;
-        }
-        case "temp": {
-        }
-        case "1wdevice": {
-            if (device_properties["type"] == "DS2438") {
-                device_properties["device_name"] = "Sensor " + "1W-TH" + " - " + circuit_display_name;
-                if (msg.temp == null) {
-                    device_properties["value"] = "N/A";
-                    device_properties["humidity"] = "N/A";
-                } else {
-                    device_properties["value"] = formatNumber(msg.temp, 1);
-                    device_properties["humidity"] = formatNumber(msg.humidity, 1);
-                    device_properties["unit"] = "&deg;C";
-                }
-            } else {
-                device_properties["device_name"] = "Sensor " + device_properties["type"] + " - " + circuit_display_name;
-                if (typeof msg.value !== "number") {
-                    device_properties["value"] = "N/A";
-                } else {
-                    device_properties["value"] = msg.value.toFixed(1);
-                    device_properties["unit"] = "&deg;C";
-                }
-            }
-            break;
-        }
-        case "device_info": {
-            device_properties["device_info_sn"] = msg.sn;
-            device_properties["device_info_name"] = msg.model;
-            device_properties["device_info_family"] = msg.family;
-            device_properties["device_name"] =
-                device_properties["device_info_family"] + " " + device_properties["device_info_name"];
-            break;
-        }
-        case "modbus_slave": {
-            device_properties["device_name"] = "Modbus device: " + msg.circuit;
-            device_properties["device_slave_id"] = msg.slave_id;
-            device_properties["device_mb_type"] = msg.modbus_type;
-            if (msg.modbus_type == "TCP") {
-                device_properties["device_mb_port"] = tcpHostText(msg.modbus_spec);
-            } else {
-                device_properties["device_mb_port"] = serial_settings[msg.circuit] || "";
-            }
-            break;
-        }
-        case "data_point":
-            {
-                if (msg.value == null) {
-                    device_properties["value"] = "N/A";
-                } else if (typeof msg.value === "number" && !Number.isInteger(msg.value)) {
-                    device_properties["value"] = msg.value.toFixed(2);
-                }
-                device_properties["device_name"] = "Value register " + circuit_display_name;
-                if (msg.name) {
-                    device_properties["device_name"] += " <br>" + msg.name;
-                }
-                device_properties["unit"] = msg.unit || "";
-                break;
-            }
-            break;
-        default:
-            break;
-    }
-    if ("alias" in msg) {
-        device_properties["device_name"] = circuit_display_name;
-    }
-    return device_properties;
-}
-
-// The value of a unit which does not respond or of a lost 1-Wire sensor is the last known one
+// The value of a unit which does not respond or of a lost 1-Wire sensor is the last known one;
+// valid of a data point tells a missing sensor, e.g. a 1-Wire thermometer of xG18
 function commNote(msg) {
     if (msg.lost === true) {
         return "sensor lost";
+    }
+    if (msg.valid === false) {
+        return "invalid value";
     }
     if (msg.comm && msg.comm !== "ok") {
         return "no communication: " + msg.comm;
@@ -702,979 +219,1149 @@ function commNote(msg) {
 }
 
 function sequencerNote(sequencer) {
-    if (sequencer.name === "sequence" && sequencer.steps != null) {
+    if (sequencer.name === "sequence" && sequencer.steps !== null && sequencer.steps !== undefined) {
         return "sequence " + sequencer.step + "/" + sequencer.steps;
     }
     return sequencer.name || "sequence";
 }
 
-// Shows the communication and the running sequencer of a device by its label. A change of an output
-// is refused while its sequencer runs, its switch is disabled.
-function refreshDeviceState(device_signature) {
-    var li = $("#" + device_signature + "_li");
-    if (!li.length) {
+// # The API
+
+class ApiError extends Error {
+    constructor(status, message) {
+        super(message);
+        this.status = status;
+    }
+}
+
+// The text of an error reply of Evok: {"success": false, "errors": {"<type>": "<message>"}}
+function errorText(reply, response) {
+    if (reply && reply.errors) {
+        return Object.entries(reply.errors)
+            .map(([type, message]) => type + ": " + message)
+            .join("\n");
+    }
+    return response ? response.status + " " + response.statusText : "Unknown error";
+}
+
+// A GET without a body, a POST of the JSON object of the body; returns the reply of Evok.
+// The token is sent in the header Authorization, a refused one opens the dialog of the token.
+async function api(path, body) {
+    const options = { headers: {} };
+    if (state.token) {
+        options.headers.Authorization = "Bearer " + state.token;
+    }
+    if (body !== undefined) {
+        options.method = "POST";
+        options.headers["Content-Type"] = "application/json";
+        options.body = JSON.stringify(body);
+    }
+    let response;
+    try {
+        response = await fetch(API_URL + path, options);
+    } catch (error) {
+        throw new ApiError(0, "Evok is not reachable");
+    }
+    let reply = null;
+    try {
+        reply = await response.json();
+    } catch (error) {}
+    if (!response.ok) {
+        if (response.status === 401) {
+            requestToken();
+        }
+        throw new ApiError(response.status, errorText(reply, response));
+    }
+    return reply;
+}
+
+// Sets the params of a device, its new state is shown at once; an error is shown, 401 by the dialog of the token
+async function setDevice(dev, circuit, params) {
+    try {
+        const reply = await api("/json/" + dev + "/" + circuit, params);
+        if (reply && reply.result) {
+            handleDevices([reply.result]);
+        }
+    } catch (error) {
+        showError(circuitName(circuit) + ": ", error);
+    }
+}
+
+function showError(prefix, error) {
+    if (error.status === 401) {
         return;
     }
-    var label = $("#" + device_signature + "_label");
-    var comm_note = comm_states[device_signature];
-    var sequencer = sequencer_states[device_signature];
-    var notes = [];
-    if (comm_note) {
-        notes.push(comm_note);
-    }
-    if (sequencer) {
-        notes.push(sequencerNote(sequencer));
-    }
-    label.find(".unipi-note").remove();
-    if (notes.length) {
-        label.append($("<span>", { class: "unipi-note" }).text(" (" + notes.join(", ") + ")"));
-    }
-    li.css("opacity", comm_note ? 0.5 : "");
-    var value_el = $("#" + device_signature + "_value");
-    if (value_el.hasClass("ui-flipswitch-input")) {
-        value_el.flipswitch(sequencer ? "disable" : "enable");
+    const toast = h("div", { class: "toast" }, prefix + error.message);
+    document.getElementById("toasts").append(toast);
+    setTimeout(() => toast.remove(), 8000);
+}
+
+// # Loading and the WebSocket
+
+function setConnection(connection) {
+    const element = document.getElementById("connection");
+    element.dataset.state = connection;
+    document.getElementById("connection-text").textContent = {
+        live: "Live · WebSocket",
+        connecting: "Connecting…",
+        offline: "Evok is not reachable",
+    }[connection];
+}
+
+// The Modbus RTU buses and the sequencers are not in /json/all
+async function loadAll() {
+    try {
+        const buses = await api("/json/serial_bus/all").catch(() => []);
+        for (const bus of buses) {
+            const settings = bus.baudrate + " 8" + bus.parity + bus.stopbits;
+            for (const circuit of bus.devices) {
+                state.serialSettings[circuit] = settings;
+                state.serialBuses[circuit] = bus.circuit;
+            }
+        }
+        const [devices, sequencers] = await Promise.all([api("/json/all"), api("/json/sequencer/all").catch(() => [])]);
+        handleDevices(devices.concat(sequencers));
+        if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+            setConnection("connecting");
+        }
+    } catch (error) {
+        if (error.status !== 401) {
+            setConnection("offline");
+            const placeholder = document.getElementById("placeholder");
+            if (placeholder) {
+                placeholder.textContent = error.message;
+            }
+        }
     }
 }
 
-function syncSequencer(msg) {
-    var output_signature = "unipi_" + msg.output.dev + "_" + msg.output.circuit;
-    if (msg.running) {
-        sequencer_states[output_signature] = msg;
-    } else {
-        delete sequencer_states[output_signature];
-    }
-    refreshDeviceState(output_signature);
+async function loadVersion() {
+    try {
+        const response = await fetch(API_URL + "/version");
+        if (response.ok) {
+            state.version = (await response.text()).trim();
+            renderBrand();
+        }
+    } catch (error) {}
 }
 
-function modbusSlaveText(device_properties) {
-    var text = "Type: " + device_properties["device_mb_type"] + ", Address: " + device_properties["device_slave_id"];
-    if (device_properties["device_mb_port"]) {
-        text += ", " + device_properties["device_mb_port"];
-    }
-    return text;
-}
-
-// The Modbus TCP server of a unit, the units of the controller are on the local server
-function tcpHostText(host) {
-    if (host == "127.0.0.1" || host == "::1" || host == "localhost") {
-        return "localhost";
-    }
-    return host || "";
-}
-
-// The settings of the port of a Modbus RTU bus, a Modbus RTU unit has always 8 data bits
-function syncSerialBus(msg) {
-    var settings = msg.baudrate + " 8-" + msg.parity + "-" + msg.stopbits;
-    $.each(msg.devices, function (index, circuit) {
-        serial_settings[circuit] = settings;
-    });
-}
-
-function syncDevice(msg) {
-    if (msg.dev == "sequencer") {
-        syncSequencer(msg);
+function connectWebSocket() {
+    if (state.ws || state.authRequired) {
         return;
     }
-    var circuit = msg.circuit;
-    var device = msg.dev;
-    var device_signature = "unipi_" + device + "_" + circuit;
-    var circuit_display_name = circuit.replace(/\_/g, " ");
-
-    if (circuit_display_name.includes(" ")) {
-        var pos = circuit_display_name.lastIndexOf(" ");
-        circuit_display_name =
-            circuit_display_name.substring(0, pos) +
-            "." +
-            circuit_display_name.substring(pos + 1, circuit_display_name.length);
-    }
-
-    // Change alias back into text
-    if ("alias" in msg) {
-        var decoded_alias = msg.alias;
-        decoded_alias = decoded_alias.replace(/_/g, " ");
-        circuit_display_name = decoded_alias;
-    }
-
-    // Dictionary for parsed message values; initialised with default fallback values
-    var device_properties = extractDeviceProperties(device, circuit, circuit_display_name, msg);
-
-    if (!$("#" + device_signature + "_li").length > 0 && device != "register" && device != "owbus") {
-        li = document.createElement("li");
-        li.id = device_signature + "_li";
-
-        if (configuratible_devices.includes(device)) {
-            populateConfigTab(device, circuit, circuit_display_name, msg);
-        }
-        var div = document.createElement("div");
-        div.className = "ui-field-contain";
-
-        var right_div = document.createElement("div");
-        right_div.style = "float: right;";
-
-        switch (device) {
-            case "ro": {
-            }
-            case "do": {
-            }
-            case "led": {
-                main_el = document.createElement("select");
-                main_el.className = "ui-btn-right";
-                var option_on = document.createElement("option");
-                option_on.value = 1;
-                option_on.textContent = "On";
-                var option_off = document.createElement("option");
-                option_off.value = 0;
-                option_off.textContent = "Off";
-                main_el.add(option_off);
-                main_el.add(option_on);
-                break;
-            }
-            case "ao": {
-                main_el = document.createElement("input");
-                main_el.className = "out";
-                main_el.min = 0;
-                main_el.step = 0.1;
-                if (device_properties["unit"] == "V") {
-                    main_el.max = 10;
-                } else if (device_properties["unit"] == "mA") {
-                    main_el.max = 20;
-                }
-                resistance_value_label = $("<h1>", { className: "ul-li-aside" });
-                resistance_value_label.text(device_properties["value"] + device_properties["unit"]);
-                break;
-            }
-            case "temp": {
-                main_el = document.createElement("h1");
-                main_el.innerHTML = device_properties["value"] + " " + device_properties["unit"];
-                //main_el.className = "ui-li-aside";
-                break;
-            }
-            case "1wdevice": {
-                main_el = document.createElement("h1");
-                main_el.innerHTML =
-                    "" +
-                    device_properties["humidity"] +
-                    " %<br>" +
-                    device_properties["value"] +
-                    " " +
-                    device_properties["unit"];
-                //main_el.className = "ui-li-aside";
-                break;
-            }
-            case "di": {
-                cnt_el = document.createElement("h1");
-                cnt_el.textContent = device_properties["counter"];
-                cnt_el.className = "ui-li-aside";
-                cnt_el.style = "right: 7em";
-                cnt_el.id = device_signature + "_counter";
-
-                cfg_el = document.createElement("a");
-                cfg_el.className = "ui-icon-gear ui-btn-icon-notext ui-corner-all";
-                cfg_el.href = "#popupBasic";
-                cfg_el.setAttribute("data-rel", "popup");
-                cfg_el.setAttribute("data-position-to", "window");
-                cfg_el.setAttribute("data-transition", "pop");
-                cfg_el.id = device_signature + "_cfg";
-
-                main_el = document.createElement("h1");
-                var state = "Off";
-                if ("bitvalue" in device_properties) {
-                    if (device_properties["bitvalue"] == 1) {
-                        state = "On";
-                    }
-                } else {
-                    if (device_properties["value"] == 1) {
-                        state = "On";
-                    }
-                }
-
-                main_el.textContent = state + device_properties["unit"];
-                break;
-            }
-            case "device_info": {
-                main_el = document.createElement("h1");
-                if (device_properties["device_info_sn"] != null) {
-                    main_el.textContent = "S/N: " + device_properties["device_info_sn"];
-                } else {
-                    main_el.textContent = "";
-                }
-                break;
-            }
-            case "modbus_slave": {
-                main_el = document.createElement("h1");
-                main_el.innerHTML = modbusSlaveText(device_properties);
-                break;
-            }
-            case "uart": {
-                main_el = document.createElement("h1");
-                main_el.textContent =
-                    "Speed: " +
-                    device_properties["uart_speed_mode"] +
-                    " Parity: " +
-                    device_properties["uart_parity_mode"];
-                break;
-            }
-            case "wd": {
-                main_el = document.createElement("h1");
-                var enabled_text = "";
-                if ((device_properties["value"] & 0b1) > 0) {
-                    enabled_text = "Enabled";
-                } else {
-                    enabled_text = "Disabled";
-                }
-                if (device_properties["watchdog_was_wd_reset"] == 0) {
-                    main_el.textContent = enabled_text + " [Not Triggered]";
-                } else {
-                    main_el.textContent = enabled_text + " [Triggered]";
-                }
-                break;
-            }
-            case "light_channel": {
-                main_el = document.createElement("input");
-                main_el.className = "out";
-                main_el.min = 0;
-                main_el.step = 1.0;
-                main_el.max = 254;
-                break;
-            }
-            default: {
-                main_el = document.createElement("h1");
-                main_el.innerHTML = device_properties["value"] + " " + device_properties["unit"];
-                break;
-            }
-        }
-
-        main_el.id = device_signature + "_value";
-
-        //Create label
-        label = document.createElement("label");
-        label.id = device_signature + "_label";
-        label.setAttribute("for", main_el.id);
-        label.innerHTML = device_properties["device_name"];
-
-        //Create the div structure
-        div.appendChild(label);
-        if (device == "ao" || device == "light_channel") {
-            div.appendChild(main_el);
+    // a browser cannot set a header of a WebSocket
+    const ws = new WebSocket(state.token ? WS_URL + "?token=" + encodeURIComponent(state.token) : WS_URL);
+    let opened = false;
+    state.ws = ws;
+    ws.onopen = () => {
+        opened = true;
+        setConnection("live");
+        loadAll();
+    };
+    ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if (Array.isArray(msg)) {
+            handleDevices(msg);
+        } else if (msg.success === false) {
+            showError("", new ApiError(400, errorText(msg)));
         } else {
-            div.appendChild(right_div);
-            right_div.appendChild(main_el);
+            handleDevices([msg]);
         }
-        li.appendChild(div);
-
-        //And append it to the html
-        switch (device) {
-            case "ai": {
-                var divider = document.getElementById("unipi_temp_divider");
-                var list = document.getElementById("inputs_list");
-                list.insertBefore(li, divider);
-                $("#inputs_list").listview("refresh");
-                break;
-            }
-            case "ao": {
-                $("#outputs_list").append(li);
-                $("#" + main_el.id).slider();
-                $("#" + main_el.id)[0].readOnly = true;
-                $("#outputs_list").listview("refresh");
-                $("#" + main_el.id).bind("slidestop", function (event, ui) {
-                    makePostRequest("ao/" + circuit, "value=" + $(this).val());
-                });
-
-                break;
-            }
-            case "led": {
-                var divider = document.getElementById("unipi_ao_divider");
-                var list = document.getElementById("outputs_list");
-                list.insertBefore(li, divider);
-                $("#" + main_el.id).flipswitch();
-                $("#outputs_list").listview("refresh");
-                $("#" + main_el.id).bind("change", function (event, ui) {
-                    makePostRequest("led/" + circuit, "value=" + $(this).val());
-                });
-                break;
-            }
-            case "ro": {
-                var divider = document.getElementById("unipi_led_divider");
-                var list = document.getElementById("outputs_list");
-                list.insertBefore(li, divider);
-                $("#" + main_el.id).flipswitch();
-                $("#outputs_list").listview("refresh");
-                $("#" + main_el.id).bind("change", function (event, ui) {
-                    makePostRequest("ro/" + circuit, "value=" + $(this).val());
-                });
-                break;
-            }
-            case "do": {
-                divider = document.getElementById("unipi_ro_divider");
-                var list = document.getElementById("outputs_list");
-                list.insertBefore(li, divider);
-                $("#" + main_el.id).flipswitch();
-                $("#outputs_list").listview("refresh");
-                $("#" + main_el.id).bind("change", function (event, ui) {
-                    makePostRequest("do/" + circuit, "value=" + $(this).val());
-                });
-                break;
-            }
-            case "di": {
-                var divider = document.getElementById("unipi_ai_divider");
-                var list = document.getElementById("inputs_list");
-                list.insertBefore(li, divider);
-                $("#inputs_list").listview("refresh");
-                break;
-            }
-            case "1wdevice": {
-            }
-            case "temp": {
-                var divider = document.getElementById("unipi_data_point_divider");
-                var list = document.getElementById("inputs_list");
-                list.insertBefore(li, divider);
-                $("#inputs_list").listview("refresh");
-                break;
-            }
-            case "data_point": {
-                $("#inputs_list").append(li);
-                $("#inputs_list").listview("refresh");
-                break;
-            }
-            case "device_info": {
-                var divider = document.getElementById("unipi_watchdog_divider");
-                var list = document.getElementById("system_list");
-                list.insertBefore(li, divider);
-                $("#system_list").listview("refresh");
-                break;
-            }
-            case "modbus_slave": {
-                $("#system_list").append(li);
-                $("#system_list").listview("refresh");
-                break;
-            }
-            case "wd": {
-                var divider = document.getElementById("unipi_modbus_slave_divider");
-                var list = document.getElementById("system_list");
-                list.insertBefore(li, divider);
-                $("#system_list").listview("refresh");
-                break;
-            }
+    };
+    ws.onclose = () => {
+        state.ws = null;
+        setConnection("connecting");
+        // a refused WebSocket (e.g. 401 of the token) tells no reason, REST reports it
+        if (!opened) {
+            loadAll();
         }
-        // Device representation already exists
-    } else if (device != "register" && device != "owbus") {
-        var main_el = document.getElementById(device_signature + "_value");
-        var label = document.getElementById(device_signature + "_label");
-        label.innerHTML = device_properties["device_name"];
-        // Set device-specific data
-        switch (device) {
-            case "ro": {
-                //unbind to prevent looping
-                $("#" + main_el.id).unbind("change");
-                $("#" + device_signature + "_value")
-                    .val(device_properties["value"])
-                    .flipswitch("refresh");
-                //and bind again
-                $("#" + main_el.id).bind("change", function (event, ui) {
-                    makePostRequest("ro/" + circuit, "value=" + $(this).val());
-                });
-                break;
-            }
-            case "do": {
-                //unbind to prevent looping
-                $("#" + main_el.id).unbind("change");
-                $("#" + device_signature + "_value")
-                    .val(device_properties["value"])
-                    .flipswitch("refresh");
-                //and bind again
-                $("#" + main_el.id).bind("change", function (event, ui) {
-                    makePostRequest("do/" + circuit, "value=" + $(this).val());
-                });
-                break;
-            }
-            case "led": {
-                //unbind to prevent looping
-                $("#" + main_el.id).unbind("change");
-                $("#" + device_signature + "_value")
-                    .val(device_properties["value"])
-                    .flipswitch("refresh");
-                //and bind again
-                $("#" + main_el.id).bind("change", function (event, ui) {
-                    makePostRequest("led/" + circuit, "value=" + $(this).val());
-                });
-                break;
-            }
-            case "ao": {
-                if (typeof msg.value === "number") {
-                    $("#" + device_signature + "_value")
-                        .val(device_properties["value"])
-                        .slider("refresh");
-                }
-                break;
-            }
-            case "di": {
-                if ("bitvalue" in device_properties) {
-                    main_el.innerHTML = device_properties["bitvalue"] == 1 ? "On" : "Off";
-                } else {
-                    main_el.innerHTML = device_properties["value"] == 1 ? "On" : "Off";
-                }
-                break;
-            }
-            case "1wdevice": {
-                if (device_properties["type"] == "DS2438") {
-                    main_el.innerHTML =
-                        "" +
-                        device_properties["humidity"] +
-                        " %<br>" +
-                        device_properties["value"] +
-                        " " +
-                        device_properties["unit"];
-                }
-                break;
-            }
-            case "device_info": {
-                if (device_properties["device_info_sn"] != null) {
-                    main_el.innerHTML = "S/N: " + device_properties["device_info_sn"];
-                } else {
-                    main_el.innerHTML = "";
-                }
-                break;
-            }
-            case "modbus_slave": {
-                main_el.innerHTML = modbusSlaveText(device_properties);
-                break;
-            }
-            case "uart": {
-                main_el.innerHTML =
-                    "Speed: " +
-                    device_properties["uart_speed_mode"] +
-                    " Parity: " +
-                    device_properties["uart_parity_mode"];
-                break;
-            }
-            case "wd": {
-                var enabled_text = "";
-                if ((device_properties["value"] & 0b1) > 0) {
-                    enabled_text = "Enabled";
-                } else {
-                    enabled_text = "Disabled";
-                }
-                if (device_properties["watchdog_was_wd_reset"] == 0) {
-                    main_el.innerHTML = enabled_text + " [Not Triggered]";
-                } else {
-                    main_el.innerHTML = enabled_text + " [Triggered]";
-                }
-                break;
-            }
-            case "light_channel": {
-                //main_el.innerHTML = "Channel " + circuit;
-                break;
-            }
-            default: {
-                main_el.innerHTML = device_properties["value"] + " " + device_properties["unit"];
-                break;
-            }
-        }
-    }
-    comm_states[device_signature] = commNote(msg);
-    refreshDeviceState(device_signature);
+        setTimeout(connectWebSocket, 1000);
+    };
 }
 
-function updateValues() {
-    // the sequencers are not in /rest/all; a sequencer which ended while the page was disconnected is cleared
-    $.ajax({
-        crossDomain: true,
-        url: api_url + "/rest/sequencer/all",
-        dataType: "json",
-        success: function (data) {
-            $.each(data, function (name, msg) {
-                syncSequencer(msg);
-            });
-        },
-    });
-    // the Modbus RTU buses are not in /rest/all, they are read before the units which show their settings
-    $.ajax({
-        crossDomain: true,
-        url: api_url + "/rest/serial_bus/all",
-        dataType: "json",
-        success: function (data) {
-            $.each(data, function (name, msg) {
-                syncSerialBus(msg);
-            });
-        },
-        complete: function () {
-            $.ajax({
-                crossDomain: true,
-                url: api_url + "/rest/all",
-                dataType: "json",
-                success: function (data) {
-                    $("#unipi_loading_spinner").css("visibility", "hidden");
-                    data = sortResults(data);
-                    $.each(data, function (name, msg) {
-                        try {
-                            syncDevice(msg);
-                        } catch (error) {
-                            console.error(error);
-                        }
-                    });
-                },
-                error: function (data) {
-                    $("#unipi_loading_spinner").css("visibility", "visible");
-                },
-            });
-        },
-    });
+// # The state of the devices
+
+// Stores the states of the devices and shows them: a new device or unit renders the page again,
+// a known device updates its view only
+function handleDevices(list) {
+    let structural = false;
+    let units = false;
+    for (const msg of list) {
+        if (msg.dev === "sequencer") {
+            handleSequencer(msg);
+            continue;
+        }
+        const key = keyOf(msg.dev, msg.circuit);
+        const old = state.devices.get(key);
+        state.devices.set(key, msg);
+        if (!old) {
+            structural = true;
+            continue;
+        }
+        if (commNote(old) !== commNote(msg)) {
+            units = true;
+        }
+        const update = state.views.get(key);
+        if (update) {
+            update(msg);
+        }
+    }
+    if (structural) {
+        renderUnits();
+        renderUnit();
+        renderBrand();
+    } else if (units) {
+        renderUnits();
+    }
 }
 
-function configButtonHandler(event) {
-    var $this = $(this);
-    var device = event.currentTarget.href.substr(
-        event.currentTarget.href.length - (event.currentTarget.hash.length - 1),
-        event.currentTarget.href.length,
-    );
-    var circuit = event.currentTarget.id.substr(30 + device.length, event.currentTarget.id.length);
-    event.preventDefault();
-    var circuit_display_name = circuit.replace(/\_/g, " ");
-    if (circuit_display_name.substring(circuit_display_name.length - 3, circuit_display_name.length - 2) == " ") {
-        circuit_display_name =
-            circuit_display_name.substring(0, circuit_display_name.length - 3) +
-            "." +
-            circuit_display_name.substring(circuit_display_name.length - 2, circuit_display_name.length);
-    }
-    var config_device_header = $("<h3>", { id: "config_form_device_header" });
-    config_device_header.text(getConfigurationFormTitle(device));
-    var config_circuit_header = $("<h5>", { id: "config_form_circuit_header" });
-    if (device != "device_info") {
-        config_circuit_header.text(circuit_display_name);
+function handleSequencer(msg) {
+    const key = keyOf(msg.output.dev, msg.output.circuit);
+    if (msg.running) {
+        state.sequencers.set(key, msg);
     } else {
-        config_circuit_header.text("PLC Device: " + circuit_display_name);
+        state.sequencers.delete(key);
     }
-    $("#unipi_config_form_inner_div").empty();
-    $("#unipi_config_form_inner_div").append(config_device_header);
-    $("#unipi_config_form_inner_div").append(config_circuit_header);
-    $.ajax({
-        crossDomain: true,
-        url: api_url + "/rest/" + device + "/" + circuit + "/",
-        dataType: "json",
-        success: function (data) {
-            configButtonRestSuccessCallback(data);
-        },
-        error: function (data) {
-            configButtonRestFailureCallback(data);
-        },
-    });
-}
-
-function configButtonRestSuccessCallback(data) {
-    var device = data.dev;
-    var circuit = data.circuit;
-    populateConfigForm($("#unipi_config_form_inner_div"), device, circuit, data);
-    $("#unipi_config_form_div").popup("open");
-}
-
-function configButtonRestFailureCallback(data) {
-    $("#unipi_config_form_device_field").val("suppress");
-    $("#unipi_config_form_div").popup("close");
-}
-
-$(document).ready(function () {
-    $("#unipi_save_all_button").on("click", function (event) {
-        saveAllButtonHandler(event);
-    });
-    $("#unipi_reset_button").on("click", function (event) {
-        resetButtonHandler(event);
-    });
-    $("#unipi_token_button").on("click", function (event) {
-        event.preventDefault();
-        openTokenPopup("");
-    });
-    $("#unipi_token_form").on("submit", function (event) {
-        event.preventDefault();
-        setToken($("#unipi_token_field").val().trim());
-    });
-    $("#unipi_token_clear_button").on("click", function (event) {
-        event.preventDefault();
-        setToken("");
-    });
-});
-
-// The units of the devices of a type (nv_save, wd) with their model by device_info, sorted by the circuit
-function loadUnits(device, callback) {
-    $.ajax({
-        crossDomain: true,
-        url: api_url + "/rest/" + device + "/all",
-        dataType: "json",
-        success: function (devices) {
-            $.ajax({
-                crossDomain: true,
-                url: api_url + "/rest/device_info/all",
-                dataType: "json",
-                success: function (infos) {
-                    var models = {};
-                    $.each(infos, function (index, info) {
-                        models[info.circuit] = info.model;
-                    });
-                    callback(devices, models);
-                },
-                // the units are shown without the models
-                error: function (xhr) {
-                    callback(devices, {});
-                },
-            });
-        },
-        error: function (xhr) {
-            showApiError("Error reading the units: ", xhr);
-        },
-    });
-}
-
-function unitLabel(circuit, models) {
-    return models[circuit] ? circuit + " (" + models[circuit] + ")" : circuit;
-}
-
-// A dialog with the choice of the units by checkboxes, all checked or none; extra are the other choices
-// {value, label} after the units. onSubmit gets the chosen values.
-function openUnitsPopup(title, message, units, models, checked, extra, submitText, onSubmit) {
-    var inner = $("#unipi_units_form_inner_div");
-    inner.empty();
-    inner.append($("<h3>").text(title));
-    if (message) {
-        inner.append($("<p>").text(message));
+    const update = state.views.get(key);
+    const output = state.devices.get(key);
+    if (update && output) {
+        update(output);
     }
-    var choices = $.map(
-        units.sort(function (a, b) {
-            return a.circuit.localeCompare(b.circuit, undefined, { numeric: true });
-        }),
-        function (unit) {
-            return { value: unit.circuit, label: unitLabel(unit.circuit, models) };
-        },
-    ).concat(extra);
-    var fieldset = $("<fieldset>", { "data-role": "controlgroup" });
-    $.each(choices, function (index, choice) {
-        var id = "unipi_units_choice_" + index;
-        fieldset.append(
-            $("<input>", {
-                type: "checkbox",
-                name: "unipi_units_choice",
-                id: id,
-                value: choice.value,
-                checked: checked,
-            }),
-            $("<label>", { for: id }).text(choice.label),
-        );
-    });
-    inner.append(fieldset);
-    inner.append($("<input>", { type: "submit", value: submitText }));
-    inner.append(
-        $("<button>", { type: "button", class: "ui-btn ui-corner-all", id: "unipi_units_cancel_button" }).text(
-            "Cancel",
+}
+
+// # The units
+
+function isLocalHost(host) {
+    return host === "127.0.0.1" || host === "::1" || host === "localhost";
+}
+
+// The units by their groups: the controller, the extensions of each serial bus, the other Modbus TCP
+// servers and the 1-Wire sensors
+function unitGroups() {
+    const units = new Set();
+    for (const msg of state.devices.values()) {
+        const unit = unitOf(msg);
+        if (unit !== null) {
+            units.add(unit);
+        }
+    }
+    const controller = controllerInfo();
+    const groups = new Map();
+    for (const unit of [...units].sort(collator.compare)) {
+        const slave = state.devices.get(keyOf("modbus_slave", unit));
+        let title;
+        if (unit === ONEWIRE) {
+            title = "1-Wire";
+        } else if (slave && slave.modbus_type === "RTU") {
+            title = "Extensions · " + (state.serialBuses[unit] || slave.modbus_spec);
+        } else if (slave && !isLocalHost(slave.modbus_spec)) {
+            title = "Modbus TCP · " + slave.modbus_spec;
+        } else {
+            title = controller ? controller.family + " " + controller.model : "Controller";
+        }
+        if (!groups.has(title)) {
+            groups.set(title, []);
+        }
+        groups.get(title).push(unit);
+    }
+    return groups;
+}
+
+function unitName(unit) {
+    if (unit === ONEWIRE) {
+        return "1-Wire sensors";
+    }
+    const info = state.devices.get(keyOf("device_info", unit));
+    if (info) {
+        return unit + " · " + info.model;
+    }
+    return /^\d+$/.test(unit) ? "Section " + unit : unit;
+}
+
+// The bus of a Modbus unit: TCP · localhost · 2, RTU · 19200 8N1 · 3
+function unitBus(unit) {
+    const slave = state.devices.get(keyOf("modbus_slave", unit));
+    if (!slave) {
+        return unit === ONEWIRE ? devicesOf("temp").length + devicesOf("1wdevice").length + " sensors" : "";
+    }
+    const bus =
+        slave.modbus_type === "TCP"
+            ? isLocalHost(slave.modbus_spec)
+                ? "localhost"
+                : slave.modbus_spec
+            : state.serialSettings[unit] || slave.modbus_spec;
+    return slave.modbus_type + " · " + bus + " · " + slave.slave_id;
+}
+
+// A unit which does not respond, not a lost sensor or an invalid value
+function unitOffline(unit) {
+    for (const msg of state.devices.values()) {
+        if (unitOf(msg) === unit && msg.comm && msg.comm !== "ok") {
+            return true;
+        }
+    }
+    return false;
+}
+
+function selectUnit(unit) {
+    state.unit = unit;
+    saveSetting("evok_unit", unit);
+    if (location.hash !== "#" + encodeURIComponent(unit)) {
+        history.replaceState(null, "", "#" + encodeURIComponent(unit));
+    }
+    renderUnits();
+    renderUnit();
+}
+
+function renderUnits() {
+    const groups = unitGroups();
+    const units = [...groups.values()].flat();
+    if (!units.includes(state.unit)) {
+        const wanted = decodeURIComponent(location.hash.slice(1)) || loadSetting("evok_unit");
+        state.unit = units.includes(wanted) ? wanted : units[0] || null;
+    }
+    document.getElementById("unit-list").replaceChildren(
+        ...[...groups].map(([title, units]) =>
+            h(
+                "section",
+                { class: "unit-group" },
+                h("h2", { class: "unit-group-title" }, title),
+                units.map((unit) => {
+                    const offline = unitOffline(unit);
+                    return h(
+                        "button",
+                        {
+                            type: "button",
+                            class: "unit-button",
+                            "aria-current": unit === state.unit ? "page" : null,
+                            onclick: () => selectUnit(unit),
+                        },
+                        h("span", { class: "dot" + (offline ? " is-offline" : "") }),
+                        h(
+                            "span",
+                            { class: "unit-button-text" },
+                            h("span", { class: "unit-button-name" }, unitName(unit)),
+                            h("span", { class: "unit-button-bus" }, unitBus(unit)),
+                        ),
+                        offline ? h("span", { class: "badge amber" }, "offline") : null,
+                    );
+                }),
+            ),
         ),
     );
-    inner.trigger("create");
-    $("#unipi_units_cancel_button").on("click", function () {
-        $("#unipi_units_popup").popup("close");
+    document.getElementById("unit-select").replaceChildren(
+        ...[...groups].map(([title, units]) =>
+            h(
+                "optgroup",
+                { label: title },
+                units.map((unit) =>
+                    h(
+                        "option",
+                        { value: unit, selected: unit === state.unit },
+                        unitName(unit) + (unitOffline(unit) ? " (offline)" : ""),
+                    ),
+                ),
+            ),
+        ),
+    );
+}
+
+function renderBrand() {
+    const controller = controllerInfo();
+    const parts = [];
+    if (controller) {
+        parts.push(controller.family + " " + controller.model + (controller.sn ? " · S/N " + controller.sn : ""));
+    }
+    if (state.version) {
+        parts.push("Evok " + state.version);
+    }
+    document.getElementById("brand-device").textContent = parts.join(" · ");
+}
+
+// # A unit: its header, the filter and the cards of its devices
+
+function renderUnit() {
+    const content = document.getElementById("content");
+    state.views.clear();
+    if (state.unit === null) {
+        if (state.devices.size) {
+            content.replaceChildren(h("p", { class: "placeholder" }, "Evok has no devices to show."));
+        }
+        return;
+    }
+    const devices = [...state.devices.values()]
+        .filter((msg) => unitOf(msg) === state.unit)
+        .sort((a, b) => collator.compare(a.circuit, b.circuit));
+    const cards = CARDS.filter((card) => state.filter === "all" || card.filter === state.filter)
+        .map((card) => renderCard(card, devices))
+        .filter((card) => card !== null);
+    if (state.filter === "all") {
+        const system = renderSystemCard();
+        if (system) {
+            cards.push(system);
+        }
+    }
+    content.replaceChildren(
+        h(
+            "div",
+            { class: "unit-header" },
+            h("div", { class: "unit-title" }, h("h1", {}, unitName(state.unit)), h("p", {}, unitDescription())),
+            h("div", { class: "spacer" }),
+            h(
+                "div",
+                { class: "segments", role: "group", "aria-label": "Show" },
+                FILTERS.map(([id, label]) =>
+                    h(
+                        "button",
+                        {
+                            type: "button",
+                            "aria-pressed": state.filter === id ? "true" : "false",
+                            onclick: () => {
+                                state.filter = id;
+                                renderUnit();
+                            },
+                        },
+                        label,
+                    ),
+                ),
+            ),
+        ),
+        cards.length
+            ? h("div", { class: "cards" }, cards)
+            : h("p", { class: "placeholder" }, "The unit has no devices of this kind."),
+    );
+}
+
+function unitDescription() {
+    const unit = state.unit;
+    if (unit === ONEWIRE) {
+        return "The sensors of the 1-Wire buses";
+    }
+    const slave = state.devices.get(keyOf("modbus_slave", unit));
+    const info = state.devices.get(keyOf("device_info", unit)) || controllerInfo();
+    const parts = [];
+    if (info) {
+        parts.push(info.family + " " + info.model);
+    }
+    if (slave) {
+        const bus =
+            slave.modbus_type === "TCP"
+                ? isLocalHost(slave.modbus_spec)
+                    ? "localhost"
+                    : slave.modbus_spec
+                : slave.modbus_spec + (state.serialSettings[unit] ? " " + state.serialSettings[unit] : "");
+        parts.push("Modbus " + slave.modbus_type + ", " + bus + ", address " + slave.slave_id);
+    }
+    return parts.join(" · ");
+}
+
+function renderCard(card, devices) {
+    const items = devices.filter((msg) => card.devs.includes(msg.dev));
+    if (!items.length) {
+        return null;
+    }
+    return h(
+        "section",
+        { class: "card" },
+        h(
+            "div",
+            { class: "card-header" },
+            h("h2", {}, card.title),
+            h("span", { class: "card-count" }, String(items.length)),
+        ),
+        h(
+            "div",
+            { class: card.kind },
+            items.map((msg) => renderDevice(msg)),
+        ),
+    );
+}
+
+// The watchdog, the Modbus scan and the model of the unit
+function renderSystemCard() {
+    const unit = state.unit;
+    const rows = [];
+    const wd = state.devices.get(keyOf("wd", unit));
+    if (wd) {
+        rows.push(renderView(wd, watchdogRow));
+    }
+    const slave = state.devices.get(keyOf("modbus_slave", unit));
+    if (slave) {
+        rows.push(renderView(slave, modbusRow));
+    }
+    const info = state.devices.get(keyOf("device_info", unit));
+    if (info) {
+        rows.push(
+            h(
+                "div",
+                { class: "row" },
+                h("span", { class: "row-name" }, "Model"),
+                h("span", { class: "row-value" }, info.model + (info.sn ? " · S/N " + info.sn : "")),
+            ),
+        );
+    }
+    if (!rows.length) {
+        return null;
+    }
+    return h(
+        "section",
+        { class: "card" },
+        h("div", { class: "card-header" }, h("h2", {}, "Unit")),
+        h("div", { class: "rows" }, rows),
+    );
+}
+
+// A view of a device: build(msg) returns {element, notes, switch, update(msg)}; the update is called
+// on each change, the notes of the communication and of a running sequencer are shown in notes
+function renderView(msg, build) {
+    const key = keyOf(msg.dev, msg.circuit);
+    const view = build(msg);
+    const update = (msg) => {
+        view.update(msg);
+        const note = commNote(msg);
+        view.element.classList.toggle("is-offline", !!note);
+        const sequencer = state.sequencers.get(key);
+        view.notes.replaceChildren(
+            ...[
+                note ? h("span", { class: "note" }, note) : null,
+                sequencer ? h("span", { class: "note blue" }, sequencerNote(sequencer)) : null,
+            ].filter((child) => child !== null),
+        );
+        if (view.switch) {
+            // a change of an output is refused while its sequencer runs
+            view.switch.disabled = !!sequencer;
+        }
+    };
+    update(msg);
+    state.views.set(key, update);
+    return view.element;
+}
+
+function renderDevice(msg) {
+    switch (msg.dev) {
+        case "di":
+            return renderView(msg, inputTile);
+        case "do":
+        case "ro":
+        case "led":
+            return renderView(msg, outputRow);
+        case "ai":
+            return renderView(msg, analogInputTile);
+        case "ao":
+            return renderView(msg, analogOutputRow);
+        case "data_point":
+            return renderView(msg, dataPointTile);
+        default:
+            return renderView(msg, sensorTile);
+    }
+}
+
+function gearButton(msg) {
+    if (!CONFIGURABLE.includes(msg.dev)) {
+        return null;
+    }
+    return h(
+        "button",
+        {
+            type: "button",
+            class: "gear",
+            "aria-label": "Configure " + displayName(msg),
+            title: "Configure",
+            onclick: () => openConfig(msg.dev, msg.circuit),
+        },
+        gearIcon(),
+    );
+}
+
+function inputTile(msg) {
+    const name = h("span", { class: "tile-name" });
+    const status = h("span", { class: "state" });
+    const counter = h("span", { class: "mono" });
+    const ds = h("span", { class: "badge blue" });
+    const notes = h("span", { class: "tile-meta" });
+    const element = h(
+        "div",
+        { class: "tile" },
+        h("div", { class: "tile-head" }, h("span", { class: "state-dot" }), name, gearButton(msg)),
+        h("div", { class: "tile-meta" }, status, counter, ds),
+        notes,
+    );
+    return {
+        element,
+        notes,
+        update(msg) {
+            name.textContent = displayName(msg);
+            name.title = circuitName(msg.circuit);
+            element.classList.toggle("is-on", msg.value === 1);
+            status.textContent = msg.value === 1 ? "On" : msg.value === 0 ? "Off" : "N/A";
+            counter.textContent =
+                msg.counter !== null && msg.counter !== undefined && msg.counter_mode !== "Disabled"
+                    ? "count " + msg.counter
+                    : "";
+            ds.hidden = msg.mode !== "DirectSwitch";
+            ds.textContent = "DS · " + (msg.ds_mode || "");
+        },
+    };
+}
+
+function outputRow(msg) {
+    const name = h("span", { class: "row-name" });
+    const pwm = h("span", { class: "badge blue" });
+    const notes = h("span", { class: "note-holder" });
+    const toggle = h("button", { type: "button", class: "switch", role: "switch" });
+    toggle.addEventListener("click", () => {
+        const current = state.devices.get(keyOf(msg.dev, msg.circuit));
+        setDevice(msg.dev, msg.circuit, { value: current && current.value === 1 ? 0 : 1 });
     });
-    $("#unipi_units_form")
-        .off("submit")
-        .on("submit", function (event) {
-            event.preventDefault();
-            var chosen = $.map(inner.find("input[name=unipi_units_choice]:checked"), function (input) {
-                return input.value;
-            });
-            if (chosen.length == 0) {
+    const element = h("div", { class: "row" }, name, notes, pwm, toggle, gearButton(msg));
+    return {
+        element,
+        notes,
+        switch: toggle,
+        update(msg) {
+            name.textContent = displayName(msg);
+            name.title = circuitName(msg.circuit);
+            toggle.setAttribute("aria-checked", msg.value === 1 ? "true" : "false");
+            toggle.setAttribute("aria-label", displayName(msg));
+            // the PWM of a DO, its value is 0 meanwhile
+            pwm.hidden = !msg.pwm_duty;
+            pwm.textContent = "PWM " + msg.pwm_duty + " % · " + msg.pwm_freq + " Hz";
+        },
+    };
+}
+
+function analogInputTile(msg) {
+    const name = h("span", { class: "tile-name" });
+    const mode = h("span", { class: "tile-caption" });
+    const value = h("span", {});
+    const unit = h("span", { class: "unit" });
+    const notes = h("span", { class: "tile-meta" });
+    const element = h(
+        "div",
+        { class: "tile" },
+        h("div", { class: "tile-head" }, name, gearButton(msg)),
+        h("span", { class: "tile-value" }, value, unit),
+        mode,
+        notes,
+    );
+    return {
+        element,
+        notes,
+        update(msg) {
+            name.textContent = displayName(msg);
+            name.title = circuitName(msg.circuit);
+            mode.textContent = msg.mode || "";
+            if (msg.unit === null || msg.unit === undefined) {
+                value.textContent = "Disabled";
+                unit.textContent = "";
+            } else {
+                value.textContent = formatNumber(msg.value, 3);
+                unit.textContent = " " + msg.unit;
+            }
+        },
+    };
+}
+
+function analogOutputRow(msg) {
+    const id = "ao-" + msg.circuit;
+    const label = h("label", { class: "row-name", for: id });
+    const slider = h("input", { type: "range", id: id });
+    const text = h("span", { class: "row-value" });
+    const notes = h("span", { class: "note-holder" });
+    let unit = "";
+    slider.addEventListener("input", () => {
+        text.textContent = Number(slider.value).toFixed(2) + " " + unit;
+    });
+    slider.addEventListener("change", () => {
+        setDevice(msg.dev, msg.circuit, { value: Number(slider.value) });
+    });
+    const element = h("div", { class: "row is-slider" }, label, slider, text, gearButton(msg), notes);
+    return {
+        element,
+        notes,
+        update(msg) {
+            label.textContent = displayName(msg);
+            const range = msg.range || [0, 10];
+            unit = msg.unit || "";
+            slider.min = range[0];
+            slider.max = range[1];
+            slider.step = (range[1] - range[0]) / 1000;
+            // the slider is not moved while it is dragged
+            if (typeof msg.value === "number" && document.activeElement !== slider) {
+                slider.value = msg.value;
+            }
+            text.textContent = formatNumber(msg.value, 2) + " " + unit;
+        },
+    };
+}
+
+function dataPointTile(msg) {
+    const caption = h("span", { class: "tile-caption" });
+    const value = h("span", {});
+    const unit = h("span", { class: "unit" });
+    const notes = h("span", { class: "tile-meta" });
+    const element = h(
+        "div",
+        { class: "tile" },
+        h("div", { class: "tile-head" }, caption),
+        h("span", { class: "tile-value" }, value, unit),
+        notes,
+    );
+    return {
+        element,
+        notes,
+        update(msg) {
+            caption.textContent = displayName(msg) + (msg.name ? " · " + msg.name : "");
+            value.textContent =
+                typeof msg.value === "number" && !Number.isInteger(msg.value)
+                    ? msg.value.toFixed(2)
+                    : formatNumber(msg.value, 0);
+            unit.textContent = msg.unit ? " " + msg.unit : "";
+        },
+    };
+}
+
+// A 1-Wire thermometer (temp) or another 1-Wire device (1wdevice), e.g. DS2438 with a humidity sensor
+function sensorTile(msg) {
+    const caption = h("span", { class: "tile-caption" });
+    const value = h("span", {});
+    const unit = h("span", { class: "unit" });
+    const extra = h("span", { class: "tile-caption" });
+    const notes = h("span", { class: "tile-meta" });
+    const element = h(
+        "div",
+        { class: "tile" },
+        h("div", { class: "tile-head" }, caption, gearButton(msg)),
+        h("span", { class: "tile-value" }, value, unit),
+        extra,
+        notes,
+    );
+    return {
+        element,
+        notes,
+        update(msg) {
+            caption.textContent = displayName(msg) + " · " + (msg.type || msg.dev);
+            caption.title = msg.circuit;
+            extra.textContent = "";
+            if (msg.type === "DS2438") {
+                value.textContent = formatNumber(msg.temp, 1);
+                unit.textContent = " °C";
+                extra.textContent = "humidity " + formatNumber(msg.humidity, 1) + " %";
+            } else if (msg.dev === "temp") {
+                value.textContent = formatNumber(msg.value, 1);
+                unit.textContent = typeof msg.value === "number" ? " °C" : "";
+            } else {
+                value.textContent = msg.value === null || msg.value === undefined ? "N/A" : String(msg.value);
+                unit.textContent = "";
+            }
+        },
+    };
+}
+
+function watchdogRow(msg) {
+    const value = h("span", { class: "row-value" });
+    const notes = h("span", { class: "note-holder" });
+    const element = h(
+        "div",
+        { class: "row" },
+        h("span", { class: "row-name" }, "Watchdog"),
+        notes,
+        value,
+        gearButton(msg),
+    );
+    return {
+        element,
+        notes,
+        update(msg) {
+            value.textContent =
+                (msg.value === 1 ? "Enabled, " + msg.timeout + " ms" : "Disabled") +
+                (msg.was_wd_reset ? " · restarted by the watchdog" : "");
+        },
+    };
+}
+
+function modbusRow(msg) {
+    const value = h("span", { class: "row-value" });
+    const notes = h("span", { class: "note-holder" });
+    const element = h("div", { class: "row" }, h("span", { class: "row-name" }, "Modbus scan"), notes, value);
+    return {
+        element,
+        notes,
+        update(msg) {
+            value.textContent =
+                (msg.scan_enabled === false ? "disabled" : "every " + msg.scan_interval + " s") +
+                (msg.scan_error ? " · " + msg.scan_error : "");
+        },
+    };
+}
+
+// # The dialog of the configuration of a device
+
+const TITLES = {
+    di: "Digital input",
+    do: "Digital output",
+    ro: "Relay output",
+    led: "User LED",
+    ai: "Analog input",
+    ao: "Analog output",
+    wd: "Watchdog",
+    temp: "1-Wire sensor",
+    "1wdevice": "1-Wire device",
+};
+
+function field(label, input, hint) {
+    const id = "config-" + input.name;
+    input.id = id;
+    return h(
+        "div",
+        { class: "field" },
+        h("label", { for: id }, label),
+        input,
+        hint ? h("span", { class: "field-hint" }, hint) : null,
+    );
+}
+
+function selectInput(name, options, selected) {
+    return h(
+        "select",
+        { name: name },
+        options.map(([value, label]) => h("option", { value: value, selected: value === selected }, label)),
+    );
+}
+
+function numberInput(name, value, attrs) {
+    return h(
+        "input",
+        Object.assign(
+            { type: "number", name: name, value: value === null || value === undefined ? "" : value, step: "any" },
+            attrs || {},
+        ),
+    );
+}
+
+// The fields of the params of a device type, named by the params of Evok
+function configFields(msg) {
+    const fields = [];
+    switch (msg.dev) {
+        case "ai":
+        case "ao": {
+            const modes = msg.modes || {};
+            if (Object.keys(modes).length) {
+                fields.push(
+                    field(
+                        "Mode",
+                        selectInput(
+                            "mode",
+                            Object.entries(modes).map(([mode, info]) => [
+                                mode,
+                                info.unit && info.range
+                                    ? mode + " (" + info.range[0] + " – " + info.range[1] + " " + info.unit + ")"
+                                    : mode,
+                            ]),
+                            msg.mode,
+                        ),
+                    ),
+                );
+            }
+            break;
+        }
+        case "do": {
+            if (msg.pwm_freq !== null && msg.pwm_freq !== undefined) {
+                // Evok sets the mode by the PWM duty cycle, PWM above 0 %, Simple at 0 %; the mode is not sent
+                const mode = selectInput(
+                    "mode",
+                    (msg.modes || ["Simple", "PWM"]).map((mode) => [mode, mode]),
+                    msg.mode,
+                );
+                mode.disabled = true;
+                const duty = numberInput("pwm_duty", msg.pwm_duty, { min: 0, max: 100 });
+                duty.addEventListener("input", () => {
+                    mode.value = parseFloat(duty.value) > 0 ? "PWM" : "Simple";
+                });
+                fields.push(
+                    field("Mode", mode, "Set by the PWM duty cycle: PWM above 0 %, Simple at 0 %"),
+                    field("PWM frequency (Hz)", numberInput("pwm_freq", msg.pwm_freq, { min: 0 })),
+                    field("PWM duty cycle (%)", duty),
+                );
+            }
+            break;
+        }
+        case "di": {
+            fields.push(field("Debounce (ms)", numberInput("debounce", msg.debounce, { min: 0, max: 65535 })));
+            const modes = msg.modes || [];
+            if (modes.length) {
+                const mode = selectInput(
+                    "mode",
+                    modes.map((mode) => [mode, mode]),
+                    msg.mode,
+                );
+                fields.push(field("Mode", mode));
+                // the DirectSwitch mode is chosen together with the mode, shown and sent only with DirectSwitch
+                if (modes.includes("DirectSwitch")) {
+                    const dsField = field(
+                        "DirectSwitch mode",
+                        selectInput(
+                            "ds_mode",
+                            (msg.ds_modes || DS_MODES).map((mode) => [mode, mode]),
+                            msg.ds_mode,
+                        ),
+                    );
+                    dsField.hidden = msg.mode !== "DirectSwitch";
+                    mode.addEventListener("change", () => {
+                        dsField.hidden = mode.value !== "DirectSwitch";
+                    });
+                    fields.push(dsField);
+                }
+            }
+            if (msg.counter !== null && msg.counter !== undefined && msg.counter_mode !== "Disabled") {
+                fields.push(field("Counter", numberInput("counter", msg.counter, { min: 0, step: 1 })));
+            }
+            break;
+        }
+        case "wd": {
+            fields.push(
+                field(
+                    "Command watchdog",
+                    selectInput(
+                        "value",
+                        [
+                            ["0", "Disabled"],
+                            ["1", "Enabled"],
+                        ],
+                        String(msg.value),
+                    ),
+                    "Restarts the unit when it gets no command within the timeout",
+                ),
+                field("Timeout (ms)", numberInput("timeout", msg.timeout, { min: 0, max: 65535, step: 1 })),
+            );
+            break;
+        }
+    }
+    // the alias of a watchdog is not used by the page
+    if (msg.dev !== "wd") {
+        fields.push(
+            field(
+                "Alias",
+                h("input", {
+                    type: "text",
+                    name: "alias",
+                    value: msg.alias ? aliasText(msg.alias) : "",
+                    maxlength: 64,
+                    pattern: "[A-Za-z0-9._\\- ]*",
+                }),
+                "Letters, digits, . _ - and spaces; empty removes the alias",
+            ),
+        );
+    }
+    return fields;
+}
+
+// The params of the form: the numbers as numbers, the hidden and disabled fields are not sent
+function configParams(form) {
+    const params = {};
+    for (const input of form.elements) {
+        if (!input.name || input.disabled || input.closest("[hidden]")) {
+            continue;
+        }
+        if (input.name === "alias") {
+            params.alias = aliasValue(input.value);
+        } else if (input.type === "number" || input.name === "value") {
+            if (input.value !== "") {
+                params[input.name] = Number(input.value);
+            }
+        } else {
+            params[input.name] = input.value;
+        }
+    }
+    return params;
+}
+
+function openConfig(dev, circuit) {
+    const msg = state.devices.get(keyOf(dev, circuit));
+    if (!msg) {
+        return;
+    }
+    const dialog = document.getElementById("config-dialog");
+    const form = document.getElementById("config-form");
+    const error = document.getElementById("config-error");
+    document.getElementById("config-title").textContent = (TITLES[dev] || dev) + " " + displayName(msg);
+    document.getElementById("config-subtitle").textContent = msg.alias ? circuitName(circuit) : "";
+    document.getElementById("config-fields").replaceChildren(...configFields(msg));
+    error.hidden = true;
+    form.onsubmit = async (event) => {
+        event.preventDefault();
+        if (!form.reportValidity()) {
+            return;
+        }
+        try {
+            const params = configParams(form);
+            const reply = await api("/json/" + dev + "/" + circuit, params);
+            if (reply && reply.result) {
+                handleDevices([reply.result]);
+            }
+            dialog.close();
+            // the PWM frequency is shared by a group of DOs, Evok sends the event of the set one only
+            if (dev === "do" && "pwm_freq" in params) {
+                api("/json/do/all")
+                    .then(handleDevices)
+                    .catch((error) => showError("Reading the digital outputs: ", error));
+            }
+        } catch (failure) {
+            if (failure.status === 401) {
+                dialog.close();
                 return;
             }
-            $("#unipi_units_popup").popup("close");
-            onSubmit(chosen);
-        });
-    $("#unipi_units_popup").popup("open");
-}
-
-// the value of the extra choice of the aliases in the dialog of Save All, a circuit of a unit has no space
-var SAVE_ALIASES = "aliases of devices";
-
-function saveAllButtonHandler(event) {
-    event.preventDefault();
-    // the settings of a Modbus unit are saved by its device nv_save, the units without it are not listed
-    loadUnits("nv_save", function (units, models) {
-        openUnitsPopup(
-            "Save current state to Flash",
-            "The units load the saved settings after their restart.",
-            units,
-            models,
-            true,
-            [{ value: SAVE_ALIASES, label: "Aliases of the devices" }],
-            "Save",
-            saveUnits,
-        );
-    });
-}
-
-function saveUnits(circuits) {
-    $.each(circuits, function (index, circuit) {
-        if (circuit == SAVE_ALIASES) {
-            $.ajax({
-                crossDomain: true,
-                url: api_url + "/rest/run/alias",
-                type: "POST",
-                data: { save: 1 },
-                success: function (data) {},
-                error: function (xhr) {
-                    showApiError("Error saving aliases: ", xhr);
-                },
-            });
-            return;
+            error.textContent = failure.message;
+            error.hidden = false;
         }
-        $.ajax({
-            crossDomain: true,
-            url: api_url + "/rest/nv_save/" + circuit,
-            type: "POST",
-            data: { value: 1 },
-            success: function (data) {},
-            error: function (xhr) {
-                showApiError("Error saving FW data of " + circuit + ": ", xhr);
-            },
-        });
-    });
+    };
+    dialog.showModal();
 }
 
-function resetButtonHandler(event) {
-    event.preventDefault();
-    // a unit is restarted by its watchdog
-    loadUnits("wd", function (units, models) {
-        openUnitsPopup(
-            "Reset units",
-            "The units restart at once, they do not respond until they start again.",
-            units,
-            models,
-            false,
-            [],
-            "Reset",
-            function (circuits) {
-                $.each(circuits, function (index, circuit) {
-                    $.ajax({
-                        crossDomain: true,
-                        url: api_url + "/rest/wd/" + circuit,
-                        type: "POST",
-                        data: { reset: 1 },
-                        success: function (data) {},
-                        error: function (xhr) {
-                            showApiError("Error resetting the unit " + circuit + ": ", xhr);
-                        },
-                    });
-                });
-            },
-        );
-    });
-}
+// # Saving and resetting of the units
 
-function createConfigPostRequestDict(arg_fields) {
-    var outp = {};
-    for (var i = 0; i < arg_fields.length; i++) {
-        switch (arg_fields[i].id) {
-            case "unipi_config_form_mode_select_field": {
-                // the mode of a DO is set by its PWM duty cycle
-                if (arg_fields[i].disabled) {
-                    break;
-                }
-                outp["mode"] = arg_fields[i].value;
-                break;
-            }
-            case "unipi_config_form_range_select_field": {
-                outp["range"] = arg_fields[i].value;
-                break;
-            }
-            case "unipi_config_form_alias_field": {
-                if (arg_fields[i].value != "") {
-                    var encoded_alias = arg_fields[i].value.replace(/ /g, "_");
-                    outp["alias"] = encoded_alias;
-                } else {
-                    outp["alias"] = "";
-                }
-                break;
-            }
-            case "unipi_config_form_pwm_freq_field": {
-                outp["pwm_freq"] = parseFloat(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_pwm_duty_field": {
-                outp["pwm_duty"] = parseFloat(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_debounce_field": {
-                outp["debounce"] = parseFloat(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_counter_field": {
-                outp["counter"] = parseFloat(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_ds_mode_select_field": {
-                // Evok refuses ds_mode out of the DirectSwitch mode
-                if ($("#unipi_config_form_mode_select_field").val() != "DirectSwitch") {
-                    break;
-                }
-                outp["ds_mode"] = arg_fields[i].value;
-                break;
-            }
-            case "unipi_config_form_parity_mode_select_field": {
-                outp["parity_mode"] = arg_fields[i].value;
-                break;
-            }
-            case "unipi_config_form_stopb_mode_select_field": {
-                outp["stopb_mode"] = arg_fields[i].value;
-                break;
-            }
-            case "unipi_config_form_speed_mode_select_field": {
-                outp["speed_mode"] = arg_fields[i].value;
-                break;
-            }
-            case "unipi_config_form_enabled_select_field": {
-                outp["value"] = parseInt(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_timeout_field": {
-                outp["timeout"] = parseInt(arg_fields[i].value);
-                break;
-            }
-            case "unipi_config_form_ap_state_select_field": {
-                outp["ap_state"] = arg_fields[i].value;
-                break;
-            }
-            case "unipi_config_form_eth0_masq_select_field": {
-                outp["eth0_masq"] = arg_fields[i].value;
-                break;
-            }
-            default: {
-                break;
-            }
-        }
-    }
-    return outp;
-}
-
-function configFormSubmitHandler(event) {
-    if ($("#unipi_config_form_device_field").val() == "suppress") {
-        return false;
-    } else {
-        var circuit = $("#unipi_config_form_circuit_field").val();
-        var device = $("#unipi_config_form_device_field").val();
+// A dialog with the checkboxes of the units, all checked or none; extra are the other choices {value, label}
+function openUnitsDialog(title, message, units, checked, extra, submitText, onSubmit) {
+    const dialog = document.getElementById("units-dialog");
+    const form = document.getElementById("units-form");
+    document.getElementById("units-title").textContent = title;
+    document.getElementById("units-message").textContent = message;
+    document.getElementById("units-submit").textContent = submitText;
+    const choices = units
+        .sort(collator.compare)
+        .map((unit) => ({ value: unit, label: unitName(unit) }))
+        .concat(extra);
+    const fieldset = document.getElementById("units-choices");
+    fieldset.replaceChildren(
+        fieldset.querySelector("legend"),
+        ...choices.map((choice) =>
+            h(
+                "label",
+                { class: "choice" },
+                h("input", { type: "checkbox", name: "unit", value: choice.value, checked: checked }),
+                choice.label,
+            ),
+        ),
+    );
+    form.onsubmit = (event) => {
         event.preventDefault();
-        $("#unipi_config_form_device_field").val("suppress");
-        $("#unipi_config_form_div").popup("close");
-        var post_request_dict = createConfigPostRequestDict(event.originalEvent.target.elements);
-        $.ajax({
-            crossDomain: true,
-            url: api_url + "/rest/" + device + "/" + circuit + "/",
-            type: "POST",
-            data: post_request_dict,
-            success: function (data) {
-                if (data.success) {
-                    updateValues();
-                    if ("alias" in post_request_dict) {
-                        if (post_request_dict["alias"] == "") {
-                            var circuit_display_name = circuit.replace(/\_/g, " ");
-                            if (
-                                circuit_display_name.substring(
-                                    circuit_display_name.length - 3,
-                                    circuit_display_name.length - 2,
-                                ) == " "
-                            ) {
-                                circuit_display_name =
-                                    circuit_display_name.substring(0, circuit_display_name.length - 3) +
-                                    "." +
-                                    circuit_display_name.substring(
-                                        circuit_display_name.length - 2,
-                                        circuit_display_name.length,
-                                    );
-                            }
-                            $("#unipi_config_div_grid_anchor_" + device + "_" + circuit).text(circuit_display_name);
-                        } else {
-                            var decoded_alias = post_request_dict["alias"];
-                            decoded_alias = decoded_alias.replace(/_/g, " ");
-                            $("#unipi_config_div_grid_anchor_" + device + "_" + circuit).text(decoded_alias);
-                        }
-                    }
+        const chosen = [...fieldset.querySelectorAll("input:checked")].map((input) => input.value);
+        if (!chosen.length) {
+            return;
+        }
+        dialog.close();
+        onSubmit(chosen);
+    };
+    dialog.showModal();
+}
+
+// The settings of a Modbus unit are saved by its device nv_save, the units without it are not listed
+function openSaveDialog() {
+    openUnitsDialog(
+        "Save current state to Flash",
+        "The units load the saved settings after their restart.",
+        devicesOf("nv_save").map((msg) => msg.circuit),
+        true,
+        [{ value: SAVE_ALIASES, label: "Aliases of the devices" }],
+        "Save",
+        (chosen) => {
+            for (const unit of chosen) {
+                if (unit === SAVE_ALIASES) {
+                    api("/json/run/alias", { save: 1 }).catch((error) => showError("Error saving aliases: ", error));
                 } else {
-                    alert("Operation failed with the following error: " + apiErrorText({ responseJSON: data }));
+                    api("/json/nv_save/" + unit, { value: 1 }).catch((error) =>
+                        showError("Error saving FW data of " + unit + ": ", error),
+                    );
                 }
-            },
-            error: function (xhr) {
-                showApiError("Operation failed with the following error: ", xhr);
-            },
-        });
+            }
+        },
+    );
+}
+
+// A unit is restarted by its watchdog
+function openResetDialog() {
+    openUnitsDialog(
+        "Reset units",
+        "The units restart at once, they do not respond until they start again.",
+        devicesOf("wd").map((msg) => msg.circuit),
+        false,
+        [],
+        "Reset",
+        (chosen) => {
+            for (const unit of chosen) {
+                api("/json/wd/" + unit, { reset: 1 }).catch((error) =>
+                    showError("Error resetting the unit " + unit + ": ", error),
+                );
+            }
+        },
+    );
+}
+
+// # The token
+
+function openTokenDialog(message) {
+    document.getElementById("token-message").textContent = message;
+    document.getElementById("token-field").value = "";
+    const dialog = document.getElementById("token-dialog");
+    if (!dialog.open) {
+        dialog.showModal();
     }
 }
 
-function webSocketRegister() {
-    if ("WebSocket" in window) {
-        if (ws || auth_required) {
-            return;
-        }
-        var loc = window.location;
-        uri = (loc.protocol === "https:" ? "wss://" : "ws://") + loc.host;
+function requestToken() {
+    if (state.authRequired) {
+        return;
+    }
+    state.authRequired = true;
+    setConnection("connecting");
+    openTokenDialog(state.token ? "Evok refused the token." : "Evok requires a token.");
+}
 
-        var ws_url = uri + "/ws";
-        if (api_token) {
-            // a browser cannot set a header of a WebSocket
-            ws_url += "?token=" + encodeURIComponent(api_token);
-        }
-        ws = new WebSocket(ws_url);
-        var opened = false;
-
-        if (!ws) {
-            setTimeout(webSocketRegister, 1000);
-            return;
-        }
-
-        window.onbeforeunload = function () {
-            ws.onclose = function () {};
-            ws.close();
-        };
-
-        ws.onopen = function () {
-            opened = true;
-            updateValues();
-        };
-
-        ws.onmessage = function (evt) {
-            var msg = JSON.parse(evt.data);
-            $("#unipi_loading_spinner").css("visibility", "hidden");
-            if (msg.constructor === Array) {
-                data = sortResults(msg);
-                $.each(data, function (name, msg) {
-                    syncDevice(msg);
-                });
-            } else {
-                syncDevice(msg);
-            }
-        };
-
-        ws.onclose = function () {
-            ws = null;
-            // a refused WebSocket (e.g. 401 of the token) tells no reason, REST reports it
-            if (!opened) {
-                updateValues();
-            }
-            setTimeout(webSocketRegister, 1000);
-        };
-
-        ws.onerror = function () {
-            $("#unipi_loading_spinner").css("visibility", "visible");
-        };
+function setToken(token) {
+    state.token = token;
+    saveSetting("evok_token", token);
+    state.authRequired = false;
+    document.getElementById("token-dialog").close();
+    // reconnect the WebSocket with the new token
+    if (state.ws) {
+        state.ws.close();
     } else {
-        alert("YOUR BROWSER DOES NOT HAVE WEBSOCKET SUPPORT!");
+        connectWebSocket();
     }
+    loadAll();
 }
 
-function makePostRequest(action, params) {
-    $.ajax({
-        crossDomain: true,
-        url: api_url + "/rest/" + action,
-        type: "POST",
-        data: params,
-        success: function (data) {},
-        error: postRequestFailed,
+// # The theme
+
+function toggleTheme() {
+    const dark = document.documentElement.dataset.theme !== "dark";
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+    saveSetting("darkMode", dark ? "true" : "false");
+}
+
+// # Start
+
+document.addEventListener("DOMContentLoaded", () => {
+    document.getElementById("save-button").addEventListener("click", openSaveDialog);
+    document.getElementById("reset-button").addEventListener("click", openResetDialog);
+    document.getElementById("token-button").addEventListener("click", () => openTokenDialog(""));
+    document.getElementById("theme-button").addEventListener("click", toggleTheme);
+    document.getElementById("unit-select").addEventListener("change", (event) => selectUnit(event.target.value));
+    document.getElementById("token-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        setToken(document.getElementById("token-field").value.trim());
     });
-}
-
-// A refused change (e.g. 409 of a running sequence) leaves the UI in the requested state, reload the real one
-function postRequestFailed(xhr) {
-    showApiError("Operation failed with the following error: ", xhr);
-    updateValues();
-}
+    document.getElementById("token-clear").addEventListener("click", () => setToken(""));
+    for (const button of document.querySelectorAll("[data-close]")) {
+        button.addEventListener("click", () => button.closest("dialog").close());
+    }
+    window.addEventListener("hashchange", () => {
+        const unit = decodeURIComponent(location.hash.slice(1));
+        if (unit && unit !== state.unit) {
+            selectUnit(unit);
+        }
+    });
+    loadVersion();
+    connectWebSocket();
+    loadAll();
+});
