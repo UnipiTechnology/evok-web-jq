@@ -358,9 +358,6 @@ function populateConfigForm(form, device, circuit, data) {
         }
         submit_button = $("<input>", { type: "submit", value: "Submit", id: "unipi_config_form_submit_button" });
         form.append([submit_button]);
-    } else {
-        print_button = $("<input>", { type: "submit", value: "Print Log", id: "unipi_config_form_print_button" });
-        form.append([print_button]);
     }
     $("#unipi_config_form").on("submit", function (event) {
         configFormSubmitHandler(event);
@@ -1290,27 +1287,7 @@ function createConfigPostRequestDict(arg_fields) {
 }
 
 function configFormSubmitHandler(event) {
-    if ($("#unipi_config_form_device_field").val() == "device_info") {
-        var circuit = $("#unipi_config_form_circuit_field").val();
-        var device = $("#unipi_config_form_device_field").val();
-        event.preventDefault();
-        $("#unipi_config_form_device_field").val("suppress");
-        $("#unipi_config_form_div").popup("close");
-        $.ajax({
-            crossDomain: true,
-            url: "http://" + $(location).attr("hostname") + ":" + api_port + "/rest/device_info/" + circuit + "/",
-            type: "POST",
-            data: { print_log: 1 },
-            success: function (data) {
-                if (data.result == "") {
-                    alert("EVOK log is empty");
-                } else {
-                    alert(data.result);
-                }
-            },
-            error: function (data) {},
-        });
-    } else if ($("#unipi_config_form_device_field").val() == "suppress") {
+    if ($("#unipi_config_form_device_field").val() == "suppress") {
         return false;
     } else {
         var circuit = $("#unipi_config_form_circuit_field").val();
