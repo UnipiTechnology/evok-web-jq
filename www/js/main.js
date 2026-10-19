@@ -81,6 +81,8 @@ var device_counts = {};
 var comm_states = {};
 // the state of the running sequencer of an output by the signature of the output
 var sequencer_states = {};
+// the settings of the serial port of a Modbus RTU unit by its circuit, e.g. "19200 8-N-1"
+var serial_settings = {};
 configuratible_devices = ["di", "ro", "do", "ai", "ao", "led", "wd", "temp"];
 
 function compare(a, b) {
@@ -662,6 +664,11 @@ function extractDeviceProperties(device, circuit, circuit_display_name, msg) {
             device_properties["device_name"] = "Modbus device: " + msg.circuit;
             device_properties["device_slave_id"] = msg.slave_id;
             device_properties["device_mb_type"] = msg.modbus_type;
+            if (msg.modbus_type == "TCP") {
+                device_properties["device_mb_port"] = tcpHostText(msg.modbus_spec);
+            } else {
+                device_properties["device_mb_port"] = serial_settings[msg.circuit] || "";
+            }
             break;
         }
         case "data_point":
@@ -742,6 +749,30 @@ function syncSequencer(msg) {
         delete sequencer_states[output_signature];
     }
     refreshDeviceState(output_signature);
+}
+
+function modbusSlaveText(device_properties) {
+    var text = "Type: " + device_properties["device_mb_type"] + ", Address: " + device_properties["device_slave_id"];
+    if (device_properties["device_mb_port"]) {
+        text += ", " + device_properties["device_mb_port"];
+    }
+    return text;
+}
+
+// The Modbus TCP server of a unit, the units of the controller are on the local server
+function tcpHostText(host) {
+    if (host == "127.0.0.1" || host == "::1" || host == "localhost") {
+        return "localhost";
+    }
+    return host || "";
+}
+
+// The settings of the port of a Modbus RTU bus, a Modbus RTU unit has always 8 data bits
+function syncSerialBus(msg) {
+    var settings = msg.baudrate + " 8-" + msg.parity + "-" + msg.stopbits;
+    $.each(msg.devices, function (index, circuit) {
+        serial_settings[circuit] = settings;
+    });
 }
 
 function syncDevice(msg) {
@@ -876,11 +907,7 @@ function syncDevice(msg) {
             }
             case "modbus_slave": {
                 main_el = document.createElement("h1");
-                main_el.innerHTML =
-                    "Type: " +
-                    device_properties["device_mb_type"] +
-                    "  Address: " +
-                    device_properties["device_slave_id"];
+                main_el.innerHTML = modbusSlaveText(device_properties);
                 break;
             }
             case "uart": {
@@ -1114,11 +1141,7 @@ function syncDevice(msg) {
                 break;
             }
             case "modbus_slave": {
-                main_el.innerHTML =
-                    "Type: " +
-                    device_properties["device_mb_type"] +
-                    "  Address: " +
-                    device_properties["device_slave_id"];
+                main_el.innerHTML = modbusSlaveText(device_properties);
                 break;
             }
             case "uart": {
@@ -1169,23 +1192,36 @@ function updateValues() {
             });
         },
     });
+    // the Modbus RTU buses are not in /rest/all, they are read before the units which show their settings
     $.ajax({
         crossDomain: true,
-        url: api_url + "/rest/all",
+        url: api_url + "/rest/serial_bus/all",
         dataType: "json",
         success: function (data) {
-            $("#unipi_loading_spinner").css("visibility", "hidden");
-            data = sortResults(data);
             $.each(data, function (name, msg) {
-                try {
-                    syncDevice(msg);
-                } catch (error) {
-                    console.error(error);
-                }
+                syncSerialBus(msg);
             });
         },
-        error: function (data) {
-            $("#unipi_loading_spinner").css("visibility", "visible");
+        complete: function () {
+            $.ajax({
+                crossDomain: true,
+                url: api_url + "/rest/all",
+                dataType: "json",
+                success: function (data) {
+                    $("#unipi_loading_spinner").css("visibility", "hidden");
+                    data = sortResults(data);
+                    $.each(data, function (name, msg) {
+                        try {
+                            syncDevice(msg);
+                        } catch (error) {
+                            console.error(error);
+                        }
+                    });
+                },
+                error: function (data) {
+                    $("#unipi_loading_spinner").css("visibility", "visible");
+                },
+            });
         },
     });
 }
