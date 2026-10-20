@@ -76,6 +76,14 @@ were removed from Evok Web (e.g. the libraries of jQuery of an older version). T
 HTTP to HTTPS, serves `www/` (installed to `/opt/evok/www`) and forwards `/json`, `/rest`, `/bulk`, `/rpc`, `/version` and `/ws`
 to Evok on `127.0.0.1:8080`, the default address of its API. Another port of Evok is set in `upstream evok`.
 
+Nginx passes the address of the client to Evok in `X-Real-IP` and `X-Forwarded-For`. Evok uses it, e.g. in its log
+of a request without the token, only with nginx in `trusted_downstream` of `apis` in its configuration:
+
+```yaml
+apis:
+  trusted_downstream: ["127.0.0.1"]
+```
+
 When Evok requires a token (`token` or `read_token` of `apis` in its configuration, see
 [Security](https://github.com/UniPiTechnology/evok/blob/main/docs/security.md)), the page asks for it
 and keeps it in the browser; *Forget token* by the key button removes it. With the `read_token` the page
