@@ -810,6 +810,11 @@ function inputTile(msg) {
     };
 }
 
+// The value of a switched-on output; the power of a 1-Wire bus is on with the value 0
+function onValue(msg) {
+    return msg.dev === "owpower" ? 0 : 1;
+}
+
 function outputRow(msg) {
     const name = h("span", { class: "row-name" });
     const pwm = h("span", { class: "badge blue" });
@@ -817,7 +822,8 @@ function outputRow(msg) {
     const toggle = h("button", { type: "button", class: "switch", role: "switch" });
     toggle.addEventListener("click", () => {
         const current = state.devices.get(keyOf(msg.dev, msg.circuit));
-        setDevice(msg.dev, msg.circuit, { value: current && current.value === 1 ? 0 : 1 });
+        const on = onValue(msg);
+        setDevice(msg.dev, msg.circuit, { value: current && current.value === on ? 1 - on : on });
     });
     const element = h("div", { class: "row" }, name, notes, pwm, toggle, gearButton(msg));
     return {
@@ -827,7 +833,7 @@ function outputRow(msg) {
         update(msg) {
             name.textContent = displayName(msg);
             name.title = circuitName(msg.circuit);
-            toggle.setAttribute("aria-checked", msg.value === 1 ? "true" : "false");
+            toggle.setAttribute("aria-checked", msg.value === onValue(msg) ? "true" : "false");
             toggle.setAttribute("aria-label", displayName(msg));
             // the PWM of a DO, its value is 0 meanwhile
             pwm.hidden = !msg.pwm_duty;
