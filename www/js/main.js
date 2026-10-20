@@ -22,6 +22,7 @@ const CARDS = [
     { title: "Analog outputs", devs: ["ao"], filter: "analog", kind: "rows" },
     { title: "Data points", devs: ["data_point"], filter: "inputs", kind: "tiles" },
     { title: "Sensors", devs: ["temp", "1wdevice"], filter: "inputs", kind: "tiles" },
+    { title: "1-Wire power", devs: ["owpower"], filter: "outputs", kind: "rows" },
 ];
 const FILTERS = [
     ["all", "All"],
@@ -158,7 +159,11 @@ function aliasValue(text) {
 }
 
 function displayName(msg) {
-    return msg.alias ? aliasText(msg.alias) : circuitName(msg.circuit);
+    if (msg.alias) {
+        return aliasText(msg.alias);
+    }
+    // the power of a 1-Wire bus has the circuit of its unit, e.g. 1
+    return msg.dev === "owpower" ? "Power " + msg.circuit : circuitName(msg.circuit);
 }
 
 // The unit of a device: the circuit of its Modbus unit, ONEWIRE, or null for the devices of no unit
@@ -166,6 +171,7 @@ function unitOf(msg) {
     switch (msg.dev) {
         case "temp":
         case "1wdevice":
+        case "owpower":
             return ONEWIRE;
         case "modbus_slave":
         case "wd":
@@ -175,7 +181,6 @@ function unitOf(msg) {
             // the controller has its model as the circuit, an extension its unit
             return msg.family === "Extension" ? msg.circuit : null;
         case "owbus":
-        case "owpower":
         case "register":
         case "sequencer":
         case "serial_bus":
@@ -469,7 +474,7 @@ function unitGroups() {
 
 function unitName(unit) {
     if (unit === ONEWIRE) {
-        return "1-Wire sensors";
+        return "1-Wire bus";
     }
     const info = state.devices.get(keyOf("device_info", unit));
     if (info) {
@@ -635,7 +640,7 @@ function renderUnit() {
 function unitDescription() {
     const unit = state.unit;
     if (unit === ONEWIRE) {
-        return "The sensors of the 1-Wire buses";
+        return "The sensors and the power of the 1-Wire buses";
     }
     const slave = state.devices.get(keyOf("modbus_slave", unit));
     const info = state.devices.get(keyOf("device_info", unit)) || controllerInfo();
@@ -744,6 +749,7 @@ function renderDevice(msg) {
         case "do":
         case "ro":
         case "led":
+        case "owpower":
             return renderView(msg, outputRow);
         case "ai":
             return renderView(msg, analogInputTile);
