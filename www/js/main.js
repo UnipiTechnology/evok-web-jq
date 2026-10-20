@@ -1267,6 +1267,24 @@ function openUnitsDialog(title, message, units, checked, extra, submitText, onSu
     dialog.showModal();
 }
 
+// The units in the order of their requests: the Modbus RTU units first, then the others (Modbus TCP);
+// a reset or a save of a TCP unit, e.g. a section of the controller, can stop the serial line for a while
+function unitsByBus(units) {
+    const isRtu = (unit) => {
+        const slave = state.devices.get(keyOf("modbus_slave", unit));
+        return slave !== undefined && slave.modbus_type === "RTU";
+    };
+    return [units.filter(isRtu), units.filter((unit) => !isRtu(unit))].filter((group) => group.length);
+}
+
+// Sends request(unit) to the units of a group at once, the next group after all of them finished;
+// request(unit) returns a promise which shows its own error
+async function requestByBus(units, request) {
+    for (const group of unitsByBus(units)) {
+        await Promise.allSettled(group.map(request));
+    }
+}
+
 // The settings of a Modbus unit are saved by its device nv_save, the units without it are not listed
 function openSaveDialog() {
     openUnitsDialog(
@@ -1277,15 +1295,16 @@ function openSaveDialog() {
         [{ value: SAVE_ALIASES, label: "Aliases of the devices" }],
         "Save",
         (chosen) => {
-            for (const unit of chosen) {
-                if (unit === SAVE_ALIASES) {
-                    api("/json/run/alias", { save: 1 }).catch((error) => showError("Error saving aliases: ", error));
-                } else {
+            if (chosen.includes(SAVE_ALIASES)) {
+                api("/json/run/alias", { save: 1 }).catch((error) => showError("Error saving aliases: ", error));
+            }
+            requestByBus(
+                chosen.filter((unit) => unit !== SAVE_ALIASES),
+                (unit) =>
                     api("/json/nv_save/" + unit, { value: 1 }).catch((error) =>
                         showError("Error saving FW data of " + unit + ": ", error),
-                    );
-                }
-            }
+                    ),
+            );
         },
     );
 }
@@ -1299,13 +1318,12 @@ function openResetDialog() {
         false,
         [],
         "Reset",
-        (chosen) => {
-            for (const unit of chosen) {
+        (chosen) =>
+            requestByBus(chosen, (unit) =>
                 api("/json/wd/" + unit, { reset: 1 }).catch((error) =>
                     showError("Error resetting the unit " + unit + ": ", error),
-                );
-            }
-        },
+                ),
+            ),
     );
 }
 
